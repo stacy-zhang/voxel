@@ -1,0 +1,535 @@
+from pathlib import Path
+from typing import Optional, Tuple
+import importlib
+import sys
+import types
+
+import numpy as np
+import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
+from vtkmodules.vtkCommonDataModel import vtkImageData, vtkPiecewiseFunction
+from vtkmodules.vtkRenderingCore import (
+    vtkColorTransferFunction,
+    vtkRenderer,
+    vtkRenderWindow,
+    vtkVolume,
+    vtkVolumeProperty,
+)
+from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
+from vtkmodules.util import numpy_support
+
+from trame.app import get_server
+from trame.ui.html import DivLayout
+from trame.widgets import html
+from trame.widgets.vtk import VtkRemoteView
+
+PACKAGE_NAME = "napari_resview"
+PACKAGE_PATH = Path(__file__).resolve().parent / PACKAGE_NAME
+
+if PACKAGE_NAME not in sys.modules:
+    package_module = types.ModuleType(PACKAGE_NAME)
+    package_module.__path__ = [str(PACKAGE_PATH)]
+    sys.modules[PACKAGE_NAME] = package_module
+
+_data_io = importlib.import_module("napari_resview.data_io")
+_rsm3d = importlib.import_module("napari_resview.rsm3d")
+
+RSMDataLoader_ISR = _data_io.RSMDataLoader_ISR
+RSMDataloader_CMS = _data_io.RSMDataloader_CMS
+write_rsm_volume_to_vtr = _data_io.write_rsm_volume_to_vtr
+RSMBuilder = _rsm3d.RSMBuilder
+
+try:
+    import matplotlib
+    import matplotlib.cm as mpl_cm
+    _HAS_MATPLOTLIB = True
+except ImportError:
+    _HAS_MATPLOTLIB = False
+
+COLORMAP_NAMES = [
+    "viridis",
+    "plasma",
+    "inferno",
+    "magma",
+    "cividis",
+    "coolwarm",
+    "gray",
+]
+
+
+def _float(value: Optional[object], default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _ensure_path(value: Optional[str]) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def _apply_color_transfer_function(
+    color_tf: vtkColorTransferFunction,
+    colormap: str,
+    value_range: Optional[Tuple[float, float]],
+) -> None:
+    color_tf.RemoveAllPoints()
+    if value_range is None or value_range[0] == value_range[1]:
+        color_tf.AddRGBPoint(0.0, 0.0, 0.0, 0.0)
+        color_tf.AddRGBPoint(1.0, 1.0, 1.0, 1.0)
+        return
+
+    lo, hi = float(value_range[0]), float(value_range[1])
+    if hi <= lo:
+        hi = lo + 1.0
+
+    if _HAS_MATPLOTLIB and colormap in matplotlib.colormaps:
+        cmap = mpl_cm.get_cmap(colormap)
+        colors = cmap(np.linspace(0.0, 1.0, 8))[:, :3]
+        for idx, rgb in enumerate(colors):
+            t = lo + (hi - lo) * idx / (len(colors) - 1)
+            color_tf.AddRGBPoint(float(t), float(rgb[0]), float(rgb[1]), float(rgb[2]))
+    else:
+        color_tf.AddRGBPoint(lo, 0.0, 0.0, 0.0)
+        color_tf.AddRGBPoint(hi, 1.0, 1.0, 1.0)
+
+
+def _apply_opacity_function(
+    opacity_tf: vtkPiecewiseFunction,
+    value_range: Optional[Tuple[float, float]],
+    opacity_scale: float,
+) -> None:
+    opacity_tf.RemoveAllPoints()
+    if value_range is None or value_range[0] == value_range[1]:
+        opacity_tf.AddPoint(0.0, 0.0)
+        opacity_tf.AddPoint(1.0, 1.0)
+        return
+
+    lo, hi = float(value_range[0]), float(value_range[1])
+    if hi <= lo:
+        hi = lo + 1.0
+    opacity_scale = max(0.0, min(float(opacity_scale), 4.0))
+    span = hi - lo
+    opacity_tf.AddPoint(lo, 0.0)
+    opacity_tf.AddPoint(lo + 0.05 * span, 0.02 * opacity_scale)
+    opacity_tf.AddPoint(lo + 0.25 * span, 0.12 * opacity_scale)
+    opacity_tf.AddPoint(lo + 0.75 * span, 0.35 * opacity_scale)
+    opacity_tf.AddPoint(hi, min(1.0, 0.8 * opacity_scale))
+
+
+def _crop_window_from_state(state) -> Optional[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    if not getattr(state, "crop_enabled", False):
+        return None
+
+    try:
+        r0 = int(state.crop_row_min)
+        r1 = int(state.crop_row_max)
+        c0 = int(state.crop_col_min)
+        c1 = int(state.crop_col_max)
+    except (TypeError, ValueError):
+        return None
+
+    if r0 < 0 or c0 < 0 or r1 <= r0 or c1 <= c0:
+        return None
+    return ((r0, r1), (c0, c1))
+
+
+def _adjust_setup_for_crop(setup, crop_window: Tuple[Tuple[int, int], Tuple[int, int]]):
+    (r0, _), (c0, _) = crop_window
+    setup.xcenter = max(0, int(setup.xcenter) - c0)
+    setup.ycenter = max(0, int(setup.ycenter) - r0)
+    setup.xpixels = max(1, int(setup.xpixels) - c0)
+    setup.ypixels = max(1, int(setup.ypixels) - r0)
+
+
+def _crop_dataframe_intensity(df, crop_window):
+    if crop_window is None:
+        return df
+    (r0, r1), (c0, c1) = crop_window
+    if r1 <= r0 or c1 <= c0:
+        return df
+
+    df = df.copy()
+    df["intensity"] = [frame[r0:r1, c0:c1] for frame in df["intensity"]]
+    return df
+
+
+def create_server():
+    server = get_server(name="napari_resview_web", client_type="vue3")
+    state, ctrl = server.state, server.controller
+
+    state.setdefault("loader_mode", "CMS")
+    state.setdefault("setup_path", "")
+    state.setdefault("tiff_dir", "")
+    state.setdefault("spec_path", "")
+    state.setdefault("space", "q")
+    state.setdefault("grid_size", 90)
+    state.setdefault("blend_mode", 0)
+    state.setdefault("shade", True)
+    state.setdefault("opacity_scale", 1.0)
+    state.setdefault("colormap", "viridis")
+    state.setdefault("crop_enabled", False)
+    state.setdefault("crop_row_min", 0)
+    state.setdefault("crop_row_max", 0)
+    state.setdefault("crop_col_min", 0)
+    state.setdefault("crop_col_max", 0)
+    state.setdefault("export_path", str(Path.cwd() / "rsm_output.vtr"))
+    state.setdefault("status", "Ready")
+    state.setdefault("scalar_range", "—")
+    state.setdefault("volume_dims", "—")
+    state.setdefault("ambient", 0.2)
+    state.setdefault("diffuse", 0.7)
+    state.setdefault("specular", 0.3)
+    state.setdefault("specular_power", 10.0)
+
+    renderer = vtkRenderer()
+    renderer.SetBackground(0.10, 0.10, 0.12)
+
+    render_window = vtkRenderWindow()
+    render_window.AddRenderer(renderer)
+    render_window.SetSize(1024, 768)
+    render_window.SetOffScreenRendering(1)
+
+    volume_mapper = vtkSmartVolumeMapper()
+    volume_mapper.SetBlendModeToComposite()
+
+    color_tf = vtkColorTransferFunction()
+    opacity_tf = vtkPiecewiseFunction()
+
+    volume_property = vtkVolumeProperty()
+    volume_property.SetInterpolationTypeToLinear()
+    volume_property.SetColor(color_tf)
+    volume_property.SetScalarOpacity(opacity_tf)
+    volume_property.ShadeOn()
+    volume_property.SetAmbient(0.2)
+    volume_property.SetDiffuse(0.7)
+    volume_property.SetSpecular(0.3)
+    volume_property.SetSpecularPower(10.0)
+
+    volume_actor = vtkVolume()
+    volume_actor.SetMapper(volume_mapper)
+    volume_actor.SetProperty(volume_property)
+    volume_actor.VisibilityOff()
+    renderer.AddVolume(volume_actor)
+    renderer.ResetCamera()
+
+    current_volume = None
+    current_axes = None
+    current_builder = None
+    
+    # Defer VtkRemoteView creation until the UI context is built
+    remote_view = None
+
+    def _update_rendering():
+        if current_volume is None:
+            return
+        state.scalar_range = state.scalar_range or "—"
+        volume_property.SetShade(bool(state.shade))
+        volume_property.SetAmbient(_float(state.ambient if hasattr(state, "ambient") else 0.2, 0.2))
+        volume_property.SetDiffuse(_float(state.diffuse if hasattr(state, "diffuse") else 0.7, 0.7))
+        volume_property.SetSpecular(_float(state.specular if hasattr(state, "specular") else 0.3, 0.3))
+        volume_property.SetSpecularPower(_float(state.specular_power if hasattr(state, "specular_power") else 10.0, 10.0))
+
+        if int(_float(state.blend_mode, 0)) == 1:
+            volume_mapper.SetBlendModeToMaximumIntensity()
+        else:
+            volume_mapper.SetBlendModeToComposite()
+
+        scalar_range = None
+        if current_volume is not None:
+            scalar_range = (float(np.nanmin(current_volume)), float(np.nanmax(current_volume)))
+
+        _apply_color_transfer_function(color_tf, _ensure_path(state.colormap), scalar_range)
+        _apply_opacity_function(opacity_tf, scalar_range, _float(state.opacity_scale, 1.0))
+        render_window.Render()
+        remote_view.update()
+
+    def _set_volume_data(volume: np.ndarray, axes: Tuple[np.ndarray, np.ndarray, np.ndarray]):
+        nonlocal current_volume, current_axes
+        current_volume = np.asarray(volume, dtype=np.float32)
+        current_axes = axes
+        image = vtkImageData()
+        nx, ny, nz = current_volume.shape
+        image.SetDimensions(nx, ny, nz)
+
+        spacings = []
+        origin = []
+        for axis_values in axes:
+            axis_arr = np.asarray(axis_values, dtype=float)
+            if axis_arr.size > 1:
+                spacing = float(axis_arr[1] - axis_arr[0])
+            else:
+                spacing = 1.0
+            spacings.append(spacing)
+            origin.append(float(axis_arr[0]))
+
+        image.SetSpacing(*spacings)
+        image.SetOrigin(*origin)
+
+        vtk_array = numpy_support.numpy_to_vtk(
+            np.ascontiguousarray(current_volume, dtype=np.float32).ravel(order="F"),
+            deep=True,
+            array_type=numpy_support.get_vtk_array_type(np.float32),
+        )
+        vtk_array.SetName("intensity")
+        image.GetPointData().SetScalars(vtk_array)
+        volume_mapper.SetInputData(image)
+        volume_actor.VisibilityOn()
+        renderer.ResetCamera()
+        _update_rendering()
+        return current_volume, current_axes
+
+    def _build_rsm():
+        nonlocal current_builder
+        state.status = "Loading experiment and TIFF frames..."
+        setup_path = Path(_ensure_path(state.setup_path)).expanduser()
+        tiff_dir = Path(_ensure_path(state.tiff_dir)).expanduser()
+        loader_mode = _ensure_path(state.loader_mode).upper() or "CMS"
+
+        if not setup_path.is_file():
+            state.status = "Missing YAML setup file."
+            return
+        if not tiff_dir.is_dir():
+            state.status = "Missing TIFF directory."
+            return
+
+        crop_window = _crop_window_from_state(state)
+
+        try:
+            if loader_mode == "ISR":
+                spec_path = Path(_ensure_path(state.spec_path)).expanduser()
+                if not spec_path.is_file():
+                    state.status = "Missing SPEC file for ISR mode."
+                    return
+                loader = RSMDataLoader_ISR(
+                    str(spec_path),
+                    str(setup_path),
+                    str(tiff_dir),
+                    use_dask=False,
+                )
+                setup, ub, df = loader.load()
+                if crop_window is not None:
+                    df = _crop_dataframe_intensity(df, crop_window)
+                    _adjust_setup_for_crop(setup, crop_window)
+            else:
+                loader = RSMDataloader_CMS(
+                    str(setup_path),
+                    str(tiff_dir),
+                    crop_window=crop_window,
+                )
+                setup, ub, df = loader.load()
+                if crop_window is not None:
+                    _adjust_setup_for_crop(setup, crop_window)
+
+            state.status = "Computing Q/HKL mapping..."
+            current_builder = RSMBuilder(setup, ub, df, ub_includes_2pi=True)
+            current_builder.compute_full(verbose=False)
+
+            grid_size = max(16, int(_float(state.grid_size, 90)))
+            state.status = "Regridding to 3D volume..."
+            volume, axes = current_builder.regrid_xu(
+                space=_ensure_path(state.space) or "q",
+                grid_shape=(grid_size, grid_size, grid_size),
+                normalize="mean",
+            )
+
+            _set_volume_data(volume, axes)
+            state.scalar_range = f"{float(np.nanmin(volume)):.4g} … {float(np.nanmax(volume)):.4g}"
+            state.volume_dims = f"{volume.shape[0]} × {volume.shape[1]} × {volume.shape[2]}"
+            state.export_path = str(Path(_ensure_path(state.export_path) or Path.cwd() / "rsm_output.vtr"))
+            state.status = "RSM volume built and ready."
+        except Exception as exc:
+            state.status = f"Error: {exc}"
+
+    @ctrl.set("build_rsm")
+    def build_rsm(**kwargs):
+        _build_rsm()
+
+    @ctrl.set("export_vtr")
+    def export_vtr(**kwargs):
+        if current_volume is None or current_axes is None:
+            state.status = "No built volume available for export."
+            return
+
+        output_path = Path(_ensure_path(state.export_path))
+        if output_path.suffix.lower() != ".vtr":
+            output_path = output_path.with_suffix(".vtr")
+        try:
+            write_rsm_volume_to_vtr(current_volume, current_axes, str(output_path), binary=True, compress=True)
+            state.status = f"Exported VTR to {output_path}" 
+            state.export_path = str(output_path)
+        except Exception as exc:
+            state.status = f"Export failed: {exc}"
+
+    @ctrl.set("refresh_rendering")
+    def refresh_rendering(**kwargs):
+        _update_rendering()
+
+    with DivLayout(server) as layout:
+        with html.Div(
+            style=(
+                "display:flex; flex-direction:row; align-items:flex-start; "
+                "height:100vh; margin:0; padding:0; background:#121212; color:#f3f3f3;"
+            )
+        ):
+            with html.Div(
+                style=(
+                    "width:360px; min-width:320px; padding:16px; overflow:auto; "
+                    "box-sizing:border-box; background:#181818; border-right:1px solid #333;"
+                )
+            ):
+                html.H2("Napari ResView Web")
+                html.P("Load experiment profiles, build 3D RSM volumes, and inspect results in the browser.")
+                html.Label("Loader mode")
+                html.Select(
+                    v_model=("loader_mode", ""),
+                    children=[
+                        html.Option("CMS", value="CMS"),
+                        html.Option("ISR", value="ISR"),
+                    ],
+                    style="width:100%; margin-bottom:12px;",
+                )
+                html.Label("Experiment YAML setup file")
+                html.Input(
+                    v_model=("setup_path", ""),
+                    placeholder="/path/to/setup.yaml",
+                    style="width:100%; margin-bottom:12px;",
+                )
+                html.Label("TIFF directory")
+                html.Input(
+                    v_model=("tiff_dir", ""),
+                    placeholder="/path/to/tiff_folder",
+                    style="width:100%; margin-bottom:12px;",
+                )
+                html.Label("SPEC file (ISR only)")
+                html.Input(
+                    v_model=("spec_path", ""),
+                    placeholder="/path/to/specfile.spec",
+                    style="width:100%; margin-bottom:12px;",
+                )
+                html.Label("Space")
+                html.Select(
+                    v_model=("space", ""),
+                    children=[
+                        html.Option("Q-space", value="q"),
+                        html.Option("HKL", value="hkl"),
+                    ],
+                    style="width:100%; margin-bottom:12px;",
+                )
+                html.Label("Grid size")
+                html.Input(
+                    v_model=("grid_size", ""),
+                    type="number",
+                    min="16",
+                    step="8",
+                    style="width:100%; margin-bottom:12px;",
+                )
+                html.Label("Colormap")
+                html.Select(
+                    v_model=("colormap", ""),
+                    children=[html.Option(name, value=name) for name in COLORMAP_NAMES],
+                    style="width:100%; margin-bottom:12px;",
+                )
+                html.Label("Opacity scale")
+                html.Input(
+                    v_model=("opacity_scale", ""),
+                    type="number",
+                    min="0.1",
+                    max="4.0",
+                    step="0.1",
+                    style="width:100%; margin-bottom:12px;",
+                )
+                html.Label("Blend mode")
+                html.Select(
+                    v_model=("blend_mode", ""),
+                    children=[
+                        html.Option("Composite", value="0"),
+                        html.Option("Maximum intensity", value="1"),
+                    ],
+                    style="width:100%; margin-bottom:12px;",
+                )
+                html.Label("Crop enabled")
+                html.Div(
+                    children=[
+                        html.Input(v_model=("crop_enabled", ""), type="checkbox", style="margin-right:8px;"),
+                        html.Span("Enable crop window"),
+                    ],
+                    style="display:flex; align-items:center; margin-bottom:12px;",
+                )
+                html.Label("Crop rows")
+                html.Div(
+                    children=[
+                        html.Input(
+                            v_model=("crop_row_min", ""),
+                            type="number",
+                            placeholder="top",
+                            style="flex:1; margin-right:8px;",
+                        ),
+                        html.Input(
+                            v_model=("crop_row_max", ""),
+                            type="number",
+                            placeholder="bottom",
+                            style="flex:1;",
+                        ),
+                    ],
+                    style="display:flex; gap:8px; margin-bottom:12px;",
+                )
+                html.Label("Crop cols")
+                html.Div(
+                    children=[
+                        html.Input(
+                            v_model=("crop_col_min", ""),
+                            type="number",
+                            placeholder="left",
+                            style="flex:1; margin-right:8px;",
+                        ),
+                        html.Input(
+                            v_model=("crop_col_max", ""),
+                            type="number",
+                            placeholder="right",
+                            style="flex:1;",
+                        ),
+                    ],
+                    style="display:flex; gap:8px; margin-bottom:12px;",
+                )
+                html.Div(
+                    children=[
+                        html.Button("Load and build RSM", click="build_rsm", style="width:100%; margin-bottom:12px; padding:12px 8px;"),
+                        html.Button("Export VTR", click="export_vtr", style="width:100%; padding:12px 8px;"),
+                    ],
+                )
+                html.Label("Export path")
+                html.Input(
+                    v_model=("export_path", ""),
+                    placeholder="/path/to/output.vtr",
+                    style="width:100%; margin-top:12px; margin-bottom:12px;",
+                )
+                html.Hr(style="border-color:#333; margin:16px 0;")
+                html.Strong("Status")
+                html.Pre(v_text="status", style="white-space:pre-wrap; background:#101010; padding:12px; border-radius:6px; margin-top:8px; color:#e8e8e8; min-height:90px;")
+                html.P(
+                    style="font-size:0.90rem; margin-top:12px; color:#bbb;",
+                    children=[
+                        f"Scalar range: ", html.Strong(v_text="scalar_range"), html.Br(),
+                        f"Volume dims: ", html.Strong(v_text="volume_dims"),
+                    ],
+                )
+            with html.Div(style="flex:1; min-width:0; background:#0f0f12; display:flex; flex-direction:column;"):
+                html.Div(
+                    style="padding:12px 16px; color:#f5f5f5; background:#141414; border-bottom:1px solid #333;",
+                    children=[
+                        html.H3("Live 3D View", style="margin:0 0 8px 0;"),
+                        html.Div("Rotate, zoom, and pan the reconstructed volume in the browser.", style="margin:0; font-size:0.95rem; color:#bbb;"),
+                    ],
+                )
+                remote_view
+
+    return server
+
+
+def run_server(port: int = 0, host: str = "localhost", open_browser: bool = True):
+    server = create_server()
+    server.start(port=port, host=host, open_browser=open_browser)
+
+
+if __name__ == "__main__":
+    run_server()
