@@ -474,8 +474,7 @@ def create_server():
                 html.Label("Experiment YAML setup file")
                 html.Input(
                     v_model=("setup_path", os.path.join(os.path.expanduser("~"), ".rsm3d_defaults.yaml")), # the second arg sets the initial value in the input field, suggesting a default path to the user
-                    #placeholder="/path/to/setup.yaml",
-                    placeholder = os.path.join(os.path.expanduser("~"), ".rsm3d_defaults.yaml"), # suggest default path to YAML setup file
+                    placeholder="Select a YAML setup file",
                     readonly=True,
                     click=(_fb_open, "['setup_path', 'file']"),
                     style="width:100%; margin-bottom:12px; cursor:pointer;",
@@ -483,7 +482,7 @@ def create_server():
                 html.Label("TIFF directory")
                 html.Input(
                     v_model=("tiff_dir", ""),
-                    placeholder="/path/to/tiff_folder",
+                    placeholder="Select a TIFF directory",
                     readonly=True,
                     click=(_fb_open, "['tiff_dir', 'dir']"),
                     style="width:100%; margin-bottom:12px; cursor:pointer;",
@@ -491,7 +490,7 @@ def create_server():
                 html.Label("SPEC file (ISR only)")
                 html.Input(
                     v_model=("spec_path", ""),
-                    placeholder="/path/to/specfile.spec",
+                    placeholder="Select a SPEC file",
                     readonly=True,
                     click=(_fb_open, "['spec_path', 'file']"),
                     style="width:100%; margin-bottom:12px; cursor:pointer;",
