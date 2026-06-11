@@ -1,0 +1,28 @@
+[workspace]
+name = "highd-webviz"
+version = "0.1.0"
+description = "Web-based 3D reciprocal-space map (RSM) visualization built with Trame and VTK."
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[tasks]
+start = "python main.py"
+
+[dependencies]
+python = "3.11.*"
+numpy = "*"
+scipy = "*"
+pandas = "*"
+h5py = "*"
+tifffile = "*"
+pyyaml = "*"
+dask = "*"
+matplotlib-base = "*"
+scikit-image = "*"
+lmfit = "*"
+vtk = "*"
+xrayutilities = "*"
+trame = "*"
+trame-vtk = "*"
+trame-client = "*"
+trame-server = "*"

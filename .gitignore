@@ -3,9 +3,13 @@ __pycache__/
 *.py[cod]
 
 # Virtual environments
+.venv3/
 .venv/
 venv/
 env/
+
+# Pixi
+.pixi/
 
 # VS Code settings
 .vscode/

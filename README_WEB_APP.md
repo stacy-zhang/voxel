@@ -22,32 +22,39 @@ A web-based interface for exploring 3D reconstructed reciprocal-space maps (RSMs
 ## Requirements
 
 - Python 3.11+ (due to `from __future__ import annotations` in Trame)
-- Virtual environment: `.venv3` (pre-configured with dependencies)
+- [Pixi](https://pixi.sh) for environment management
 
 ## Installation
 
-The virtual environment `.venv3` is already configured with all required packages:
+The environment is defined in `pixi.toml`. Install all dependencies with:
 
 ```bash
-# Verify the environment is set up
-./.venv3/bin/python --version  # Should output Python 3.11.x
+pixi install
 ```
+
+This creates a managed environment in `.pixi/` with the correct Python version and all packages.
 
 ### Dependencies
 
 - **Core**: trame, trame-vtk, vtk, numpy, scipy
 - **Scientific**: xrayutilities, pandas, pyyaml
 - **Data I/O**: tifffile, h5py, dask
-- **Visualization**: matplotlib (for colormap sampling)
+- **Visualization**: matplotlib, scikit-image, lmfit
 
-All packages are pre-installed in `.venv3`.
+All packages are declared in `pixi.toml` and resolved from conda-forge.
 
 ## Running the Web App
 
 ### Launch with Default Settings
 
 ```bash
-./.venv3/bin/python main.py
+pixi run start
+```
+
+or equivalently:
+
+```bash
+pixi run python main.py
 ```
 
 The server will:
@@ -58,7 +65,7 @@ The server will:
 ### Command-Line Options
 
 ```bash
-./.venv3/bin/python main.py --help
+pixi run python main.py --help
 ```
 
 Options:
@@ -70,10 +77,10 @@ Options:
 
 ```bash
 # Run on port 8080, accessible from any interface
-./.venv3/bin/python main.py --port 8080 --host 0.0.0.0
+pixi run python main.py --port 8080 --host 0.0.0.0
 
 # Run on localhost without opening browser
-./.venv3/bin/python main.py --no-browser
+pixi run python main.py --no-browser
 ```
 
 ## Usage Workflow
