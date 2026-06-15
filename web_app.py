@@ -233,6 +233,7 @@ def create_server():
     
     # Defer VtkRemoteView creation until the UI context is built
     remote_view = None
+    # how to instantiate remote_view: it needs the render_window, but that needs to be created after the trame server is running. So we create it here as None, and then assign it inside the DivLayout context manager where we have access to the server.
 
     def _set_status(message: str):
         """Append a message to the Status history and push it to the client.
@@ -246,7 +247,7 @@ def create_server():
         entry = f"[{timestamp}] {message}"
         state.status_log = list(state.status_log or []) + [entry]
         state.status = entry  # most recent message (kept for convenience)
-        state.flush("status_log", "status")
+        state.flush()
 
     def _update_rendering():
         if current_volume is None:
@@ -270,7 +271,10 @@ def create_server():
         _apply_color_transfer_function(color_tf, _ensure_path(state.colormap), scalar_range)
         _apply_opacity_function(opacity_tf, scalar_range, _float(state.opacity_scale, 1.0))
         render_window.Render()
-        remote_view.update()
+        # remote_view is created later, inside the UI layout. Guard against it
+        # being None if a render is somehow triggered before the UI is built.
+        if remote_view is not None:
+            remote_view.update()
 
     def _set_volume_data(volume: np.ndarray, axes: Tuple[np.ndarray, np.ndarray, np.ndarray]):
         nonlocal current_volume, current_axes
@@ -310,6 +314,7 @@ def create_server():
     @ctrl.set("build_rsm")
     async def build_rsm(**kwargs):
         nonlocal current_builder
+        _set_status("Loading data...")
         setup_path = Path(_ensure_path(state.setup_path)).expanduser()
         tiff_dir = Path(_ensure_path(state.tiff_dir)).expanduser()
         loader_mode = _ensure_path(state.loader_mode).upper() or "CMS"
@@ -520,6 +525,8 @@ def create_server():
         state.fb_show = False
 
     with DivLayout(server) as layout:
+        remote_view = VtkRemoteView(render_window, ref="remote_view") 
+        # remote_view is defined twice because we need to assign it inside the UI context manager where we have access to the server, but we also need to reference it in the _update_rendering function defined above. The first assignment is just a placeholder to allow the reference; the second assignment is the actual instantiation of the VtkRemoteView widget.
         html.Style(
             "* { box-sizing: border-box; }"
             "html, body { margin: 0; height: 100%; font-family: sans-serif; }"
@@ -663,8 +670,8 @@ def create_server():
                         style="flex:1;",
                     )
                 with html.Div():
-                    html.Button("Load and build RSM", click="build_rsm", style="width:100%; margin-bottom:12px; padding:12px 8px;")
-                    html.Button("Export VTR", click="export_vtr", style="width:100%; padding:12px 8px;")
+                    html.Button("Load and build RSM", click=ctrl.build_rsm, style="width:100%; margin-bottom:12px; padding:12px 8px;")
+                    html.Button("Export VTR", click=ctrl.export_vtr, style="width:100%; padding:12px 8px;")
                 html.Label("Export path")
                 html.Input(
                     v_model=("export_path", ""),
@@ -702,14 +709,11 @@ def create_server():
                     html.Span("Dimensions: ")
                     html.Strong(v_text="volume_dims")
             with html.Div(style="flex:1; min-width:0; height:100%; background:#0f0f12; display:flex; flex-direction:column;"):
-                # html.Div(
-                #     style="padding:12px 16px; color:#f5f5f5; background:#141414; border-bottom:1px solid #333;",
-                #     children=[
-                #         html.H3("Live 3D View", style="margin:0 0 8px 0;"),
-                #         html.Div("Rotate, zoom, and pan the reconstructed volume in the browser.", style="margin:0; font-size:0.95rem; color:#bbb;"),
-                #     ],
-                # )
-                remote_view
+                # Instantiate the remote view that streams the off-screen VTK
+                # render window to the browser. This reassigns the `remote_view`
+                # closure variable that _update_rendering()/_set_volume_data()
+                # read, so live renders now have a surface to push to.
+                remote_view = VtkRemoteView(render_window, interactive_ratio=1)
 
         # File browser modal dialog
         with html.Div(  

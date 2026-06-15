@@ -368,15 +368,33 @@ Python server runs VTK headless and streams frames to the browser.
 
 
 ===============================================================================
- 8. KNOWN GAP / TODO IN THE WEB APP
+ 8. STAGE-3 WIRING NOTES (web app)
 ===============================================================================
 
- In create_server(), `remote_view` is initialized to None and placed into the
- layout, but is not yet instantiated as VtkRemoteView(render_window). Until that
- wiring is completed, _update_rendering()'s `remote_view.update()` has no live
- surface to push to. The full STAGE-3 web path is:
+ Two pieces of wiring are required for the "Load and build RSM" button to show
+ a result; both are now in place in create_server():
+
+ (1) The 3D surface. `remote_view` starts as None and is instantiated inside the
+     right-hand panel of the UI layout as:
+           remote_view = VtkRemoteView(render_window, interactive_ratio=1)
+     Because _update_rendering() and _set_volume_data() read `remote_view`
+     through the closure, reassigning it in the layout gives every later
+     remote_view.update() a live surface that streams each rendered frame to the
+     browser. (A None-guard in _update_rendering() avoids a crash if a render is
+     ever triggered before the layout is built.)
+
+ (2) The button trigger. The buttons must reference the CONTROLLER methods, not
+     a string:
+           html.Button("Load and build RSM", click=ctrl.build_rsm)
+           html.Button("Export VTR",        click=ctrl.export_vtr)
+     A string like click="build_rsm" is evaluated as a client-side JS
+     expression (there is no Vue method by that name), so the click silently
+     does nothing. Passing ctrl.build_rsm makes trame register the trigger that
+     invokes the async Python handler.
+
+ With both in place the STAGE-3 web path is:
        VtkRemoteView(render_window)  ->  placed in the right-hand panel  ->
+       build_rsm -> _set_volume_data -> _update_rendering ->
        remote_view.update() streams each rendered frame to the browser.
- Completing that instantiation is what finishes the divergent rendering branch.
 
 ===============================================================================
