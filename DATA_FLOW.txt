@@ -1,0 +1,382 @@
+===============================================================================
+ RSM DATA FLOW & PIPELINE
+ highd-webviz : napari desktop plugin  vs.  trame/VTK web application
+===============================================================================
+
+This document describes, end to end, what happens to the data in BOTH
+front-ends:
+
+  * the original napari desktop plugin   (napari_resview/ package)
+  * the trame + VTK web application      (web_app.py)
+
+It names the concrete classes/methods used at each step and the file they live
+in, identifies where the two front-ends are identical, where they diverge, and
+which parts of the napari_resview code can or cannot be reused directly in the
+web app.
+
+
+===============================================================================
+ 0. THE BIG PICTURE — ONE PIPELINE, THREE STAGES, TWO FRONT-ENDS
+===============================================================================
+
+Both apps implement the SAME logical pipeline, made of three stages:
+
+   STAGE 1  LOAD     raw input files            ->  (setup, UB, df)
+   STAGE 2  BUILD    (setup, UB, df)            ->  dense 3D volume + axes
+   STAGE 3  RENDER   dense 3D volume + axes     ->  pixels on a screen
+            EXPORT   dense 3D volume + axes     ->  .vtr file on disk
+
+STAGES 1 and 2 are IDENTICAL in both apps — they call the exact same code in
+the napari_resview package. The apps only DIVERGE at STAGE 3 (rendering), and
+they SHARE the export path again.
+
+       INPUT FILES                         napari_resview package
+   ┌──────────────────┐              ┌──────────────────────────────┐
+   │ YAML setup file  │              │ data_io.py : loaders + setup │
+   │ TIFF frame dir   │ ──STAGE 1──► │ rsm3d.py   : RSMBuilder      │ ──┐
+   │ SPEC file (ISR)  │              │ spec_parser.py : SpecParser  │   │
+   └──────────────────┘              └──────────────────────────────┘   │
+                                                                        │
+                          (setup, UB, df)  ──STAGE 2 (RSMBuilder)──►  volume+axes
+                                                                        │
+                  ┌─────────────────────────────────────────────────────┘
+                  │
+        STAGE 3 ──┤── DIVERGES HERE ──┐
+                  │                   │
+        napari desktop            trame web app
+   data_viz.RSMNapariViewer   web_app.py vtk* objects
+   viewer.add_image(...)      vtkImageData + vtkVolume + VtkRemoteView
+   (local Qt/GPU window)      (off-screen render, streamed to browser)
+                  │                   │
+                  └──── EXPORT (shared) ────┘
+                  data_io.write_rsm_volume_to_vtr(...)  ->  .vtr file
+
+
+===============================================================================
+ 1. THE DATA OBJECTS THAT FLOW THROUGH THE PIPELINE
+===============================================================================
+
+As the data moves through the stages it is converted into these forms:
+
+ (a) Input files
+       - YAML setup file : detector geometry + photon energy/wavelength.
+       - TIFF directory  : one 2D intensity image per detector frame.
+       - SPEC file       : (ISR only) per-frame goniometer angles + UB matrix.
+
+ (b) `setup`  : an ExperimentSetup object
+       distance, pixel pitch, beam center (x,y), pixel counts, wavelength.
+
+ (c) `UB`     : a 3x3 numpy orientation matrix (maps Q -> HKL).
+       Real matrix for ISR; identity for CMS (so HKL == Q).
+
+ (d) `df`     : a pandas DataFrame, ONE ROW PER FRAME, columns include
+       "intensity" (the 2D image), "th"/"omega", "chi", "phi", "tth",
+       "scan_number", and (ISR) "ub".
+
+ (e) Scattered point cloud (inside RSMBuilder after compute_full):
+       Q_samp : (Nframes, ny, nx, 3) float32   reciprocal-space coords (Å⁻¹)
+       hkl    : (Nframes, ny, nx, 3) float32   crystallographic indices
+       intensity : (Nframes, ny, nx) float32   the weights
+
+ (f) Dense 3D volume (output of regrid_xu):
+       grid   : (nx, ny, nz) float32           the actual "RSM"
+       axes   : (xaxis, yaxis, zaxis)           1D bin-center coordinates
+
+ (g) Render-ready forms:
+       - napari : grid + scale/translate derived from axes
+       - VTK    : grid wrapped in vtkImageData (spacing/origin from axes)
+
+ (h) Export: a .vtr (VTK XML RectilinearGrid) file.
+
+
+===============================================================================
+ 2. FILE / CLASS / METHOD MAP (napari_resview package)
+===============================================================================
+
+napari_resview/data_io.py
+  - ExperimentSetup                 geometry + wavelength container
+      .from_yaml(path)              parse the YAML setup file -> setup
+  - RSMDataLoader_ISR               SPEC + TIFF loader (4-circle data)
+      .load() -> (setup, UB, df)
+  - RSMDataloader_CMS               filename-based TIFF loader (CMS data)
+      .load() -> (setup, UB, df)    UB = identity
+  - ReadFrame                       scans a dir, reads TIFFs into a DataFrame
+      .load_data()
+  - write_rsm_volume_to_vtr(...)    EXPORT: volume+axes -> .vtr file
+  - write_rsm_volume_to_vtk(...)    EXPORT: legacy .vtk (alternative)
+  - export_rsm_vtps(...)            EXPORT: point-cloud .vtp (alternative)
+
+napari_resview/spec_parser.py
+  - SpecParser                      parse SPEC log -> per-frame metadata + UB
+      .to_pandas()
+
+napari_resview/rsm3d.py
+  - RSMBuilder(setup, UB, df, ...)  STAGE 2 engine
+      .compute_full()               per-pixel angles+geometry -> Q/HKL cloud
+                                    (uses xrayutilities.QConversion)
+      .regrid_xu(space, grid_shape, ...) -> (grid, axes)
+                                    scatter -> dense volume (xu.Gridder3D)
+      .regrid_auto / .regrid_interpolate / .regrid_intensity  (NumPy variants)
+
+napari_resview/data_viz.py        (napari-ONLY rendering)
+  - RSMNapariViewer(grid, axes, ...)
+      .launch(viewer)               viewer.add_image(...) -> 3D layer
+  - IntensityNapariViewer           raw-frame browser (per-frame 2D viewer)
+
+napari_resview/resview_widget.py  (napari-ONLY orchestration / GUI)
+  - ResviewDockWidget               the magicgui dock widget; wires buttons
+      ._load_worker (@thread_worker) async STAGE 1
+      .on_build                     STAGE 2a  -> RSMBuilder + compute_full
+      .on_regrid                    STAGE 2b  -> regrid_xu
+      .on_view                      STAGE 3   -> RSMNapariViewer.launch
+      (export handler)              -> write_rsm_volume_to_vtr
+
+napari_resview/napari.yaml         napari plugin manifest (contributes widget)
+main.py / tomo_viewer.py           desktop launchers
+
+
+===============================================================================
+ 3. FILE / CLASS / METHOD MAP (web application)
+===============================================================================
+
+web_app.py   (single file; trame server + VTK rendering + UI)
+  module-level helpers (pure, reused by the render step):
+    - _apply_color_transfer_function(color_tf, colormap, value_range)
+    - _apply_opacity_function(opacity_tf, value_range, opacity_scale)
+    - _crop_window_from_state / _crop_dataframe_intensity /
+      _adjust_setup_for_crop          (mirror of napari crop logic)
+    - _float / _ensure_path           (state coercion helpers)
+
+  create_server():
+    - get_server(..., client_type="vue3")     the trame server
+    - state / ctrl                             trame reactive state + controller
+    - VTK objects built ONCE:
+        vtkRenderer, vtkRenderWindow (OffScreenRendering),
+        vtkSmartVolumeMapper, vtkColorTransferFunction,
+        vtkPiecewiseFunction, vtkVolumeProperty, vtkVolume
+    - remote_view (trame.widgets.vtk.VtkRemoteView)  bridges window -> browser
+    - _set_status(msg)                 append to status_log, flush live
+    - _update_rendering()              rebuild transfer funcs + render + stream
+    - _set_volume_data(volume, axes)   wrap numpy volume in vtkImageData
+    - _load_experiment / _compute_builder / _regrid_volume
+                                       thin wrappers that call the SAME
+                                       loaders + RSMBuilder, run in a thread
+    - @ctrl.set("build_rsm")  async    STAGE 1+2 orchestration (live status)
+    - @ctrl.set("export_vtr") async    EXPORT -> write_rsm_volume_to_vtr
+    - DivLayout / trame.widgets.html   the browser UI (sidebar + 3D panel)
+    - file-browser dialog (_fb_*)      server-side file picker
+
+  run_server(): create_server().start(...)
+
+  Imports the napari_resview engine via importlib:
+    RSMDataLoader_ISR, RSMDataloader_CMS, write_rsm_volume_to_vtr  (data_io)
+    RSMBuilder                                                     (rsm3d)
+
+
+===============================================================================
+ 4. STEP-BY-STEP DATA FLOW — NAPARI DESKTOP APP
+===============================================================================
+
+Orchestrator: napari_resview/resview_widget.py (ResviewDockWidget), driven by
+buttons in the magicgui dock inside a napari Qt window.
+
+ STEP D1  USER PICKS FILES
+   magicgui FileEdit widgets capture the YAML / TIFF dir / SPEC paths into the
+   widget state. (Desktop-native file dialogs.)
+
+ STEP D2  LOAD  (async, off the Qt thread)
+   ResviewDockWidget._load_worker  [@thread_worker]
+     -> RSMDataloader_CMS(...).load()   OR   RSMDataLoader_ISR(...).load()
+        (data_io.py)
+     -> returns (setup, UB, df), saved into self._state.
+   IntensityNapariViewer (data_viz.py) can show the raw frames.
+
+ STEP D3  BUILD  (ResviewDockWidget.on_build)
+   -> RSMBuilder(setup, UB, df, sample_axes=, detector_axes=, ...) (rsm3d.py)
+   -> b.compute_full(verbose=False)   produces the scattered Q/HKL cloud
+   -> builder cached in self._state["builder"].
+
+ STEP D4  REGRID  (ResviewDockWidget.on_regrid)
+   -> b.regrid_xu(space=, grid_shape=, fuzzy=, normalize=, stream=True)
+   -> returns (grid, edges) -> cached in self._state["grid"]/["edges"].
+
+ STEP D5  VIEW  (ResviewDockWidget.on_view)
+   -> RSMNapariViewer(grid, edges, space=, cmap=, contrast=, ...) (data_viz.py)
+   -> viz.launch(viewer=self.viewer)
+        -> napari viewer.add_image(volume, colormap=, scale=, translate=,
+           contrast_limits=)
+        -> napari builds the GPU volume rendering LOCALLY in the Qt window;
+           the user rotates/zooms with napari's own camera.
+
+ STEP D6  EXPORT  (export handler)
+   -> write_rsm_volume_to_vtr(grid, edges, filename) (data_io.py) -> .vtr
+
+ Threading: STAGE 1 runs in a napari thread_worker; the heavy STAGE 2 build
+ runs on button callbacks. Progress/status is shown via napari widgets.
+
+
+===============================================================================
+ 5. STEP-BY-STEP DATA FLOW — WEB APPLICATION
+===============================================================================
+
+Orchestrator: web_app.py (create_server), driven by buttons in a browser; the
+Python server runs VTK headless and streams frames to the browser.
+
+ STEP W0  SERVER STARTUP  (create_server)
+   - Build the trame server (vue3 client) and reactive `state`.
+   - Build the VTK pipeline ONCE: vtkRenderer + vtkRenderWindow
+     (SetOffScreenRendering(1)) + vtkSmartVolumeMapper + transfer functions +
+     vtkVolumeProperty + vtkVolume. The volume actor starts hidden.
+   - A VtkRemoteView is the bridge that ships rendered frames to the browser.
+
+ STEP W1  USER PICKS FILES
+   A SERVER-SIDE file-browser dialog (_fb_open/_fb_refresh/_fb_click, the
+   `fb_*` state) lists directories on the server and writes the chosen path
+   into state.setup_path / state.tiff_dir / state.spec_path. Each selection
+   pushes a live status line via _set_status. (No OS file dialog; the server's
+   filesystem is browsed through the web UI.)
+
+ STEP W2  LOAD + BUILD + REGRID  (@ctrl.set("build_rsm"), async)
+   Triggered by the "Load and build RSM" button (click="build_rsm").
+   - Validates the chosen paths; on error, _set_status reports it.
+   - Runs the heavy work in a thread executor (loop.run_in_executor) so the
+     trame event loop stays free to stream LIVE status updates:
+       _load_experiment(...)   -> RSMDataLoader_ISR/CMS.load()  (data_io.py)
+       _compute_builder(...)   -> RSMBuilder(...).compute_full() (rsm3d.py)
+       _regrid_volume(...)     -> RSMBuilder.regrid_xu()         (rsm3d.py)
+   - Each step calls _set_status("Loading...", "Computing...", "Regridding...")
+     and state.flush() so the browser Status box updates as it goes.
+
+ STEP W3  PUSH VOLUME INTO VTK  (_set_volume_data)
+   - Wrap the numpy `volume` in a vtkImageData:
+       SetDimensions(nx,ny,nz);
+       SetSpacing(axis[1]-axis[0] per axis);  SetOrigin(axis[0] per axis);
+       numpy_to_vtk(...) -> SetScalars("intensity").
+   - volume_mapper.SetInputData(image); volume_actor.VisibilityOn();
+     renderer.ResetCamera().
+
+ STEP W4  RENDER + STREAM  (_update_rendering)
+   - Build appearance by hand:
+       _apply_color_transfer_function(color_tf, colormap, scalar_range)
+       _apply_opacity_function(opacity_tf, scalar_range, opacity_scale)
+       set shade/ambient/diffuse/specular + blend mode.
+   - render_window.Render()  (off-screen, server GPU/CPU)
+   - remote_view.update()    ship the new frame to the browser.
+   - scalar_range / volume_dims state fields update the info panel.
+
+ STEP W5  EXPORT  (@ctrl.set("export_vtr"), async)
+   -> write_rsm_volume_to_vtr(current_volume, current_axes, path) (data_io.py)
+   -> .vtr written on the SERVER; status reported live.
+
+ Threading model note: the web app MUST offload STAGE 1+2 to a thread executor
+ and flush state between steps; otherwise the single async event loop would
+ block and the browser would see no progress until the very end. The napari app
+ instead uses Qt thread_workers for the same reason.
+
+
+===============================================================================
+ 6. WHERE THE TWO FRONT-ENDS ARE THE SAME vs. WHERE THEY DIVERGE
+===============================================================================
+
+ IDENTICAL (literally the same napari_resview code is called):
+
+   STAGE 1 LOAD   ExperimentSetup.from_yaml, RSMDataLoader_ISR.load,
+                  RSMDataloader_CMS.load, SpecParser, ReadFrame
+                  -> both produce the same (setup, UB, df).
+
+   STAGE 2 BUILD  RSMBuilder.compute_full and RSMBuilder.regrid_xu
+                  -> both produce the same (grid, axes).
+
+   CROP LOGIC     Same intent. napari crops the DataFrame/setup at the source
+                  (resview_widget "Crop from ROI"); the web app reimplements
+                  the equivalent in web_app.py (_crop_window_from_state,
+                  _crop_dataframe_intensity, _adjust_setup_for_crop).
+
+   EXPORT         write_rsm_volume_to_vtr is shared verbatim.
+
+ DIVERGENCE POINT — exactly at STAGE 3 (turning `grid`+`axes` into pixels):
+
+   napari:  RSMNapariViewer.launch -> viewer.add_image(...). napari owns the
+            volume rendering, camera, colormap, contrast; runs LOCALLY in a Qt
+            window on the user's machine.
+
+   web app: builds vtkImageData + vtkSmartVolumeMapper + explicit color/opacity
+            transfer functions, renders OFF-SCREEN on the server, and streams
+            the result to the browser via VtkRemoteView. Appearance controls
+            (colormap, opacity, blend, shading) are built by hand because there
+            is no high-level "add_image".
+
+ ORCHESTRATION / UI also diverge:
+   napari:  magicgui dock widget + Qt buttons + napari thread_workers +
+            persistent YAML profiles (ISR/CMS) in resview_widget.py.
+   web app: trame reactive `state` + controller methods + html widgets +
+            asyncio executor + a server-side file browser, all in web_app.py.
+
+
+===============================================================================
+ 7. REUSABILITY — WHAT CAN / CANNOT BE REUSED IN THE WEB APP
+===============================================================================
+
+ DIRECTLY REUSABLE (no changes; web_app.py imports these as-is):
+
+   data_io.py
+     ExperimentSetup, RSMDataLoader_ISR, RSMDataloader_CMS, ReadFrame,
+     write_rsm_volume_to_vtr
+       -> Pure data/IO + numpy/pandas. No napari or Qt dependency. The web app
+          imports RSMDataLoader_ISR, RSMDataloader_CMS, write_rsm_volume_to_vtr
+          straight from this module.
+
+   rsm3d.py
+     RSMBuilder (compute_full, regrid_xu, and the NumPy regridders)
+       -> Pure numpy + xrayutilities. Front-end agnostic; reused unchanged.
+          (Note: it prints progress to stdout — harmless on the server, but a
+          callback/logger hook would be cleaner for the web UI.)
+
+   spec_parser.py
+     SpecParser
+       -> Pure parsing; reused indirectly via RSMDataLoader_ISR.
+
+ REUSABLE ONLY AS A LOGIC TEMPLATE (must be reimplemented, NOT imported):
+
+   resview_widget.py (ResviewDockWidget)
+       -> This is the napari ORCHESTRATOR. It depends on napari, magicgui, and
+          Qt thread_workers, and stores everything in a Qt widget's state. It
+          cannot run in a headless web server. The SEQUENCE it encodes
+          (load -> compute_full -> regrid_xu -> view -> export) was re-expressed
+          in web_app.py using trame controllers + asyncio executors. Its crop
+          and profile logic were likewise re-expressed, not imported.
+
+ NOT REUSABLE (napari/Qt-bound; replaced by VTK/trame equivalents):
+
+   data_viz.py (RSMNapariViewer, IntensityNapariViewer)
+       -> Hard dependency on `import napari`; calls viewer.add_image, napari
+          camera, scale bars, axis labels, HUD overlays. None of this exists in
+          a browser. The web app REPLACES it with the VTK volume-rendering
+          pipeline in web_app.py (_set_volume_data + _update_rendering +
+          VtkRemoteView). The *concept* (volume + scale/translate + colormap +
+          contrast) carries over, but the implementation is entirely different.
+
+   napari.yaml, main.py, tomo_viewer.py
+       -> napari plugin manifest / desktop launchers; irrelevant to the web app
+          (which starts via run_server / a trame server).
+
+ RULE OF THUMB:
+   Anything in napari_resview that is PURE DATA/MATH (data_io, rsm3d,
+   spec_parser) is shared by both apps. Anything that TOUCHES THE SCREEN OR THE
+   GUI FRAMEWORK (data_viz, resview_widget, napari.yaml) is napari-specific and
+   must be re-implemented with trame + VTK in web_app.py.
+
+
+===============================================================================
+ 8. KNOWN GAP / TODO IN THE WEB APP
+===============================================================================
+
+ In create_server(), `remote_view` is initialized to None and placed into the
+ layout, but is not yet instantiated as VtkRemoteView(render_window). Until that
+ wiring is completed, _update_rendering()'s `remote_view.update()` has no live
+ surface to push to. The full STAGE-3 web path is:
+       VtkRemoteView(render_window)  ->  placed in the right-hand panel  ->
+       remote_view.update() streams each rendered frame to the browser.
+ Completing that instantiation is what finishes the divergent rendering branch.
+
+===============================================================================
