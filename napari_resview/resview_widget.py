@@ -100,7 +100,7 @@ os.environ.setdefault(
 )
 
 
-def yaml_path() -> str:
+def yaml_path() -> str: # Allow override of defaults path via environment variable, else use ~/.rsm3d_defaults.yaml
     p = os.environ.get(DEFAULTS_ENV, "").strip()
     if p:
         return os.path.abspath(os.path.expanduser(p))

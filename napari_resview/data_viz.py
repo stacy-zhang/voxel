@@ -82,6 +82,14 @@ class RSMNapariViewer:
         data = self._log1p_clip(self.volume) if self.log_view else self.volume
         lo, hi = self._robust_percentiles(data, self.contrast_percentiles)
 
+        # STAGE 3 (napari path): hand the dense RSM volume straight to napari.
+        # napari builds the GPU volume rendering internally -- `scale`/`translate`
+        # place the voxels at the correct reciprocal-space coordinates (derived
+        # from the regrid axes), and `colormap`/`contrast_limits` control the
+        # appearance. The trame/VTK web app (web_app.py) reproduces this same
+        # step manually instead: it wraps the identical volume in a vtkImageData
+        # and builds explicit color + opacity transfer functions, because there
+        # is no high-level "add_image" helper on the VTK side.
         layer = v.add_image(
             data,
             name="RSM3D",

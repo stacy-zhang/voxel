@@ -25,6 +25,48 @@ except ImportError:
 from .spec_parser import SpecParser
 
 
+# =============================================================================
+# DATA PIPELINE OVERVIEW: from raw input files to a reciprocal-space map (RSM)
+# =============================================================================
+# The RSM pipeline has three stages, and the first two live in this module:
+#
+#   1. LOAD (this file): turn the user's input files into a uniform table.
+#        * ExperimentSetup.from_yaml(...) parses the YAML setup file for the
+#          detector geometry (distance, pixel pitch, beam center, pixel counts)
+#          and the photon energy/wavelength.
+#        * A loader (RSMDataLoader_ISR or RSMDataloader_CMS) reads the TIFF
+#          detector frames plus their per-frame metadata (goniometer angles,
+#          scan numbers, and a UB orientation matrix), and returns the triple
+#          (setup, UB, df). `df` has one row per detector frame: a 2D intensity
+#          image ("intensity") together with the motor angles for that frame.
+#
+#   2. BUILD (rsm3d.py): RSMBuilder.compute_full() uses xrayutilities to convert
+#        every detector pixel of every frame into a reciprocal-space coordinate
+#        (Q in Å⁻¹, or HKL via the UB matrix). RSMBuilder.regrid_xu() then bins
+#        that scattered point cloud onto a regular 3D grid -> a dense volume.
+#
+#   3. VISUALIZE / EXPORT: the dense 3D volume is rendered or written to disk.
+#
+# SAME CORE, TWO FRONT-ENDS:
+#   The napari plugin (data_viz.py) and the trame web app (web_app.py) share
+#   stages 1 and 2 verbatim -- both call these loaders and RSMBuilder. They only
+#   diverge at stage 3:
+#     * napari (data_viz.RSMNapariViewer): hands the NumPy volume to
+#       `viewer.add_image(..., scale=, translate=)`; napari owns the GPU volume
+#       rendering, camera, colormap and contrast in a desktop Qt window.
+#     * trame + VTK (web_app.py): wraps the SAME NumPy volume in a
+#       `vtkImageData` (axis spacing/origin taken from the regrid axes), feeds a
+#       `vtkSmartVolumeMapper` / `vtkVolume` with explicit color + opacity
+#       transfer functions, renders OFF-SCREEN on the server, and streams the
+#       frames to the browser through trame's `VtkRemoteView`. Same data, but
+#       the transfer functions/colormap are built by hand instead of by napari,
+#       and rendering is server-side and remote rather than local.
+#
+# write_rsm_volume_to_vtr() (bottom of this file) is the export path used by the
+# web app's "Export VTR" button; it serializes the same volume to a VTK file.
+# =============================================================================
+
+
 class RSMDataLoader_ISR:
     """
     Load and merge SPEC metadata with TIFF intensity frames.
@@ -49,6 +91,13 @@ class RSMDataLoader_ISR:
         self.selected_scans = selected_scans
 
     def load(self):
+        # ISR mode = SPEC + TIFF. Three sources are joined here:
+        #   (a) ExperimentSetup: detector geometry + wavelength from the YAML.
+        #   (b) SpecParser: per-frame metadata (goniometer angles, scan/data
+        #       numbers, UB matrix) parsed from the SPEC log.
+        #   (c) ReadFrame: the raw 2D intensity images from the TIFF directory.
+        # The output (setup, UB, df) is exactly what RSMBuilder consumes, and is
+        # identical whether this runs under napari or under the trame web app.
         setup = ExperimentSetup.from_yaml(self.setup_file)
         exp = SpecParser(
             self.spec_file, self.setup_file, selected_scans=self.selected_scans
@@ -83,6 +132,9 @@ class RSMDataLoader_ISR:
                 raise ValueError("No TIFF frames match selected_scans.")
 
         # 4. Merge only the needed scans
+        # Join metadata rows with their matching TIFF frame on (scan, data).
+        # After this, each row carries both the angles AND the 2D image, which
+        # is the per-frame structure RSMBuilder.compute_full() iterates over.
         df = pd.merge(
             df_meta, df_int, on=["scan_number", "data_number"], how="inner"
         )
@@ -151,6 +203,10 @@ class RSMDataLoader_ISR:
 
         UB = _resolve_default_ub(df, selected_list)
 
+        # The canonical RSM input triple consumed by RSMBuilder:
+        #   setup -> detector geometry + wavelength (for the pixel->Q mapping)
+        #   UB    -> 3x3 orientation matrix (maps Q -> HKL)
+        #   df    -> one row per frame: 2D "intensity" image + motor angles
         return setup, UB, df
 
 
@@ -278,6 +334,9 @@ class RSMDataloader_CMS:
             ) * self.angle_step
 
         # Final DataFrame (same structure as original CMS loader)
+        # CMS frames have no SPEC log, so most goniometer angles are fixed at 0
+        # and only "th" varies (one angle per scan). The column layout still
+        # matches the ISR loader's output so RSMBuilder treats both identically.
         df = pd.DataFrame(
             {
                 "scan_number": df_meta["scan_number"].values,
@@ -289,6 +348,9 @@ class RSMDataloader_CMS:
             }
         )
 
+        # CMS provides no orientation matrix, so HKL is undefined; an identity
+        # UB means "HKL == Q" downstream. Reciprocal-space maps in Q are still
+        # fully valid; only the HKL-labeled view is not physically meaningful.
         UB = np.eye(3, dtype=float)
         return setup, UB, df
 
@@ -800,6 +862,15 @@ def write_rsm_volume_to_vtk(rsm, edges, filename, binary=False):
 def write_rsm_volume_to_vtr(rsm, coords, filename, binary=True, compress=True):
     """
     Write a 3D RSM volume to VTK XML RectilinearGrid (.vtr).
+
+    This is the on-disk EXPORT counterpart to the live VTK rendering. The trame
+    web app's "Export VTR" button calls this with the very same (volume, axes)
+    that it also pushes into an in-memory `vtkImageData` for interactive
+    display. The difference: here the grid is RECTILINEAR (explicit per-axis bin
+    edges, so non-uniform spacing is preserved exactly) and serialized to a
+    portable .vtr file (openable in ParaView), whereas the live web view uses a
+    uniform `vtkImageData` (single spacing/origin) for fast GPU volume mapping.
+    napari likewise consumes the same volume but through `viewer.add_image`.
 
     Parameters
     ----------
