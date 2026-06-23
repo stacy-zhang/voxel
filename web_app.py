@@ -401,8 +401,21 @@ def create_server():
     current_volume = None
     current_axes = None
     current_builder = None
+    # Loaded experiment state (populated by Load Data, consumed by Build/Regrid).
+    current_setup = None
+    current_ub = None
+    current_df = None
+    current_frames = None
+    # Regridded volume awaiting display (View RSM renders it).
+    regrid_volume = None
+    regrid_axes = None
+    # The vtkImageData built for display (log/contrast-scaled) — referenced by
+    # the slicing/probe helpers in the Analysis tab.
+    current_image = None
     # Robust display range (log-scaled) used to build the transfer functions.
     render_range = None
+    # In-flight asyncio task, tracked so the Stop button can cancel it.
+    current_task = None
     # Defer VtkRemoteView creation until the UI context is built
     remote_view = None
     # how to instantiate remote_view: it needs the render_window, but that needs to be created after the trame server is running. So we create it here as None, and then assign it inside the DivLayout context manager where we have access to the server.
@@ -430,8 +443,11 @@ def create_server():
         volume_property.SetDiffuse(_float(state.diffuse if hasattr(state, "diffuse") else 0.7, 0.7))
         volume_property.SetSpecular(_float(state.specular if hasattr(state, "specular") else 0.3, 0.3))
         volume_property.SetSpecularPower(_float(state.specular_power if hasattr(state, "specular_power") else 10.0, 10.0))
-
-        if int(_float(state.blend_mode, 0)) == 1:
+        
+        # Map the napari-style rendering choice to a VTK blend mode:
+        #   mip -> maximum intensity; everything else -> composite.
+        rendering = _ensure_path(getattr(state, "rendering", "")) or "attenuated_mip"
+        if rendering == "mip" or int(_float(state.blend_mode, 0)) == 1:
             volume_mapper.SetBlendModeToMaximumIntensity()
         else:
             volume_mapper.SetBlendModeToComposite()
