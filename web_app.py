@@ -27,7 +27,7 @@ from vtkmodules.vtkRenderingCore import (
     vtkVolume,
     vtkVolumeProperty,
 )
-from vtkmodules.vtkRenderingImage import vtkImageReSliceMapper # maps 3D volume to a 2D slice plane (for orthogonal slicing)
+from vtkmodules.vtkRenderingImage import vtkImageResliceMapper # maps a 3D volume to a 2D slice plane
 from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
 from vtkmodules.util import numpy_support
 
@@ -306,12 +306,10 @@ def create_server():
     state.setdefault("sph_opacity", 0.7)
     state.setdefault("sph_cmap", "viridis")
 
-
     state.setdefault("blend_mode", 0)
     state.setdefault("shade", True)
     state.setdefault("opacity_scale", 1.0)
     state.setdefault("colormap", "viridis")
-
     state.setdefault("status", "Ready")
     state.setdefault("status_log", ["Ready"])
     state.setdefault("scalar_range", "—")
@@ -334,7 +332,6 @@ def create_server():
 
     # Which tab is expanded ("" = all collapsed; one of data/build/view/analysis)
     state.setdefault("open_tab", "")
-
 
     renderer = vtkRenderer()
     renderer.SetBackground(0.10, 0.10, 0.12)
@@ -801,34 +798,34 @@ def create_server():
         except Exception as exc:
             _set_status(f"Build error: {exc}")
 
-        @ctrl.set("build_rsm")
-        def build_rsm(**kwargs):
-            _track(_do_build_rsm())
+    @ctrl.set("build_rsm")
+    def build_rsm(**kwargs):
+        _track(_do_build_rsm())
 
-        async def _do_regrid():
-            nonlocal regrid_volume, regrid_axes
-            if current_builder is None:
-                _set_status("Build the RSM map first.")
-                return
-            loop = asyncio.get_event_loop()
-            try:
-                grid_size = max(16, int(_float(state.grid_size, 90)))
-                _set_status(f"Regridding to {grid_size}³ volume...")
-                volume, axes = await loop.run_in_executor(
-                    None, _regrid_volume, current_builder, grid_size
-                )
-                regrid_volume, regrid_axes = volume, axes
-                state.scalar_range = (
-                    f"{float(np.nanmin(volume)):.4g} … {float(np.nanmax(volume)):.4g}"
-                )
-                state.volume_dims = (
-                    f"{volume.shape[0]} × {volume.shape[1]} × {volume.shape[2]}"
-                )
-                _set_status("Regrid complete. Use View RSM to display.")
-            except asyncio.CancelledError:
-                _set_status("Regrid cancelled.")
-            except Exception as exc:
-                _set_status(f"Regrid error: {exc}")
+    async def _do_regrid():
+        nonlocal regrid_volume, regrid_axes
+        if current_builder is None:
+            _set_status("Build the RSM map first.")
+            return
+        loop = asyncio.get_event_loop()
+        try:
+            grid_size = max(16, int(_float(state.grid_size, 90)))
+            _set_status(f"Regridding to {grid_size}³ volume...")
+            volume, axes = await loop.run_in_executor(
+                None, _regrid_volume, current_builder, grid_size
+            )
+            regrid_volume, regrid_axes = volume, axes
+            state.scalar_range = (
+                f"{float(np.nanmin(volume)):.4g} … {float(np.nanmax(volume)):.4g}"
+            )
+            state.volume_dims = (
+                f"{volume.shape[0]} × {volume.shape[1]} × {volume.shape[2]}"
+            )
+            _set_status("Regrid complete. Use View RSM to display.")
+        except asyncio.CancelledError:
+            _set_status("Regrid cancelled.")
+        except Exception as exc:
+            _set_status(f"Regrid error: {exc}")
 
     @ctrl.set("regrid")
     def regrid(**kwargs):
@@ -935,7 +932,16 @@ def create_server():
 
     @ctrl.set("refresh_rendering")
     def refresh_rendering(**kwargs):
-        _update_rendering()
+        if regrid_volume is not None and regrid_axes is not None:
+            # Re-apply view settings (log/contrast/colormap) by rebuilding the
+            # display volume, then refresh slices and push to the client.
+            _set_volume_data(regrid_volume, regrid_axes)
+        else:
+            _update_rendering()
+        _update_all_slices()
+        render_window.Render()
+        if remote_view is not None:
+            remote_view.update()
 
     def _fb_target_label(target: str) -> str:
         labels = {
