@@ -10,6 +10,7 @@ import types
 
 import numpy as np
 import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
+from vtkmodules.vtkCommonCore import vtkLookupTable # maps raw scalar data to colors (RGBA)
 from vtkmodules.vtkCommonDataModel import vtkImageData, vtkPiecewiseFunction
 from vtkmodules.vtkRenderingCore import (
     vtkColorTransferFunction,
@@ -151,6 +152,30 @@ def _robust_percentiles(
         if hi <= lo:
             hi = lo + 1.0
     return float(lo), float(hi)
+
+
+def _make_lookup_table(colormap: str, value_range: Tuple[float, float]) -> vtkLookupTable:
+    """Build a vtkLookupTable for slice/probe actors from a matplotlib colormap."""
+    lut = vtkLookupTable()
+    lo, hi = float(value_range[0]), float(value_range[1])
+    if hi <= lo:
+        hi = lo + 1.0
+    n = 256
+    lut.SetNumberOfTableValues(n) # specify total number of colors in the gradient
+    lut.SetRange(lo, hi) # define min/max data values to map
+    if _HAS_MATPLOTLIB and colormap in matplotlib.colormaps:
+        cmap = mpl_cm.get_cmap(colormap)
+        colors = cmap(np.linspace(0.0, 1.0, n))
+        for i in range(n):
+            r, g, b, _ = colors[i]
+            lut.SetTableValue(i, float(r), float(g), float(b), 1.0) # i is the index, A (transparency) is set to 1.0 for full opacity
+    else:
+        for i in range(n):
+            t = i / (n - 1)
+            lut.SetTableValue(i, t, t, t, 1.0) # this creates a grayscale gradient if matplotlib is not available or the colormap is invalid
+            # when R, G, and B, are equal, the color is a shade of gray, and the value of t determines how light/dark that shade is
+    lut.Build()
+    return lut
 
 
 def _crop_window_from_state(state) -> Optional[Tuple[Tuple[int, int], Tuple[int, int]]]:
