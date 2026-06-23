@@ -12,14 +12,22 @@ import numpy as np
 import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
 from vtkmodules.vtkCommonCore import vtkLookupTable # maps raw scalar data to colors (RGBA)
 from vtkmodules.vtkCommonDataModel import vtkImageData, vtkPiecewiseFunction
+from vtkmodules.vtkCommonTransforms import vtkTransform
+from vtkmodules.vtkFiltersCore import vtkProbeFilter
+from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
+from vtkmodules.vtkFiltersSources import vtkCylinderSource, vtkSphereSource # generates a cylinder or sphere mesh (for cylindrical/spherical slicing)
 from vtkmodules.vtkRenderingCore import (
+    vtkActor,
     vtkColorTransferFunction,
+    vtkImageSlice, 
+    vtkPolyDataMapper,
     vtkRenderer,
     vtkRenderWindow,
     vtkRenderWindowInteractor,
     vtkVolume,
     vtkVolumeProperty,
 )
+from vtkmodules.vtkRenderingImage import vtkImageReSliceMapper # maps 3D volume to a 2D slice plane (for orthogonal slicing)
 from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
 from vtkmodules.util import numpy_support
 
@@ -283,7 +291,7 @@ def create_server():
     state.setdefault("slice_opacity", 0.8)
     state.setdefault("slice_cmap", "turbo")
     state.setdefault("slice_show_border", True)
-    
+
     ## cylindrical slicing (Q space only)
     state.setdefault("cyl_show", False)
     state.setdefault("cyl_radius", 1.0)
