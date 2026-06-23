@@ -235,25 +235,48 @@ def create_server():
     server = get_server(name="napari_resview_web", client_type="vue3")
     state, ctrl = server.state, server.controller
 
+    # Data tab
     state.setdefault("loader_mode", "CMS")
     state.setdefault("setup_path", yaml_path())
     state.setdefault("tiff_dir", "")
     state.setdefault("spec_path", "")
-    state.setdefault("space", "q")
-    state.setdefault("grid_size", 90)
-    # # Streaming (low-memory) build: compute per-pixel Q one frame at a time and
-    # # bin directly, instead of allocating the full (Nframes, ny, nx, 3) cube.
-    # state.setdefault("stream_build", True)
-    state.setdefault("blend_mode", 0)
-    state.setdefault("shade", True)
-    state.setdefault("opacity_scale", 1.0)
-    state.setdefault("colormap", "viridis")
+    state.setdefault("cms_angle_step", 0.30) # range from 0 to 360
     state.setdefault("crop_enabled", False)
     state.setdefault("crop_row_min", 0)
     state.setdefault("crop_row_max", 0)
     state.setdefault("crop_col_min", 0)
     state.setdefault("crop_col_max", 0)
+    ## Experimental setup
+    state.setdefault("exp_distance", 0.0)
+    state.setdefault("exp_pitch", 0.0)
+    state.setdefault("exp_det_h", 0)
+    state.setdefault("exp_det_w", 0)
+    state.setdefault("exp_bc_h", 0)
+    state.setdefault("exp_bc_w", 0)
+    state.setdefault("exp_energy", 0.0)
+    state.setdefault("exp_wavelength", 0.0)
+
+    # Build tab
+    state.setdefault("space", "q")
+    state.setdefault("grid_size", 90)
+    state.setdefault("normalize", "mean")
+    state.setdefault("ub_includes_2pi", True)
+    state.setdefault("1_based_center", True)
+    state.setdefault("fuzzy_gridder", False)
+    state.setdefault("width_fuzzy", 0.01) # range from 0 to 999999999
+
+    # View tab
+    state.setdefault("log_view", True)
+    state.setdefault("rendering", "attenuated_mip")
+    state.setdefault("contrast_lo", 1.0)
+    state.setdefault("contrast_hi", 99.8)
     state.setdefault("export_path", str(Path.cwd() / "rsm_output.vtr"))
+
+    state.setdefault("blend_mode", 0)
+    state.setdefault("shade", True)
+    state.setdefault("opacity_scale", 1.0)
+    state.setdefault("colormap", "viridis")
+
     state.setdefault("status", "Ready")
     state.setdefault("status_log", ["Ready"])
     state.setdefault("scalar_range", "—")
