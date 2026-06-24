@@ -248,7 +248,7 @@ def create_server():
     state.setdefault("setup_path", yaml_path())
     state.setdefault("tiff_dir", "")
     state.setdefault("spec_path", "")
-    state.setdefault("cms_angle_step", 0.30) # range from 0 to 360
+    state.setdefault("cms_angle_step", 0.50) # range from 0 to 360, default 0.5 (every half-degree)
     state.setdefault("crop_enabled", False)
     state.setdefault("crop_row_min", 0)
     state.setdefault("crop_row_max", 0)
