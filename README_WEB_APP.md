@@ -5,19 +5,23 @@ A web-based interface for exploring 3D reconstructed reciprocal-space maps (RSMs
 ## Features
 
 - **Interactive 3D Volume Rendering**: GPU-accelerated volume visualization with real-time rotation, zoom, and panning
+- **Tabbed Accordion Control Panel**: The left panel is organized into four collapsible tabs — **Data**, **Build**, **View**, and **Analysis**
+- **Step-by-Step Pipeline**: Each stage has its own button — Load Data, View Intensity, Crop from ROI, Build RSM, Regrid, View RSM, Refresh, and Stop — so each step can be run and inspected independently
 - **Dual Loader Support**:
-  - **CMS mode**: Load 3D diffraction data directly from TIFF files without metadata
-  - **ISR mode**: Load SPEC metadata with TIFF intensity frames for comprehensive experimental tracking
+  - **CMS mode**: Load 3D diffraction data from a TIFF directory (with a configurable angle step) without SPEC metadata
+  - **ISR mode**: Load a SPEC file with TIFF intensity frames for comprehensive experimental tracking
+- **Editable Experimental Setup**: Detector distance, pixel pitch, detector height/width (px), beam-center height/width (px), photon energy, and wavelength are populated from the setup file and can be overridden before building (energy and wavelength stay in sync)
+- **Raw Intensity Inspection**: View the loaded detector frames directly as a stacked volume before building the RSM
 - **Flexible Data Space**: Render in Q-space (reciprocal Ångström) or HKL (Miller indices)
 - **Adjustable Visualization Parameters**:
   - Colormap selection (viridis, plasma, coolwarm, etc.)
-  - Opacity transfer function scaling
-  - Blend mode (composite or maximum intensity)
+  - Log-intensity toggle and low/high contrast percentile clipping
+  - Rendering mode (composite / maximum-intensity / attenuated MIP)
   - Shading and lighting properties
-- **ROI-Based Cropping**: Define rectangular crop windows on detector images before processing
+- **ROI-Based Cropping**: Define rectangular crop windows (row/col min-max) on detector images and re-crop the loaded data
+- **Analysis Slicing**: Orthogonal (X/Y/Z) plane slices plus cylindrical and spherical surface sampling (Q-space) with per-slice opacity and colormap
 - **3D Regridding**: Scatter-to-grid interpolation using xrayutilities for uniform 3D volumes
 - **Export Capabilities**: Save reconstructed volumes as VTK XML RectilinearGrid (.vtr) format
-- **Responsive UI**: Sidebar controls + full-width 3D visualization viewport
 
 ## Requirements
 
@@ -85,33 +89,46 @@ pixi run python main.py --no-browser
 
 ## Usage Workflow
 
-### 1. Load Data
+### 1. Data tab — load and prepare
 
 1. **Select Loader Mode**: CMS or ISR
-2. **Provide Paths**:
-   - **YAML Setup**: Path to experiment configuration file (required)
-   - **TIFF Directory**: Folder containing detector images (required)
-   - **SPEC File**: For ISR mode only
-3. (Optional) **Configure Crop**: Enable and specify detector ROI bounds (row/col min-max)
-4. Click **Load and Build RSM**
+2. **Provide Paths** (via the server-side file browser):
+   - **TIFF Directory**: folder containing detector images (required)
+   - **YAML Setup**: experiment configuration file
+   - **SPEC File**: ISR mode only
+   - **Angle Step**: CMS mode only
+3. (Optional) Review/override the **Experimental Setup** fields (distance, pitch,
+   detector height/width, beam-center height/width, energy, wavelength).
+4. Click **Load Data** (loads data only; no rendering yet).
+5. (Optional) Click **View Intensity** to inspect the raw detector frames.
+6. (Optional) Enter crop bounds (row/col min-max) and click **Crop from ROI** to
+   re-crop the loaded data (a rebuild is required afterward).
 
-### 2. Inspect Volume
+### 2. Build tab — compute the RSM
+
+1. Click **Build RSM** to compute the Q/HKL mapping.
+2. Click **Regrid** to scatter the cloud into a uniform 3D volume.
+
+### 3. View tab — render and export
+
+1. Click **View RSM** to display the regridded volume.
+2. Adjust **Log view**, **colormap**, **rendering mode**, and **low/high contrast
+   percentiles**, then click **Refresh** to re-apply.
+3. Click **Stop** to cancel a running load/build/regrid task.
+4. Set the **Export Path** (.vtr) and use the export control to save.
+
+### 4. Analysis tab — slicing
+
+- Toggle **orthogonal** X/Y/Z plane slices and adjust their position, opacity,
+  and colormap.
+- Toggle **cylindrical** and **spherical** surface sampling (Q-space) and adjust
+  radius, sample count, opacity, and colormap.
+
+### Interacting with the 3D view
 
 - **Rotate**: Left mouse drag
 - **Zoom**: Mouse wheel or right drag
 - **Pan**: Middle mouse drag
-- **Adjust Rendering**:
-  - Change colormap
-  - Adjust opacity scale
-  - Toggle shading
-  - Switch blend mode
-  - Modify grid size for finer/coarser regridding
-
-### 3. Export Results
-
-1. Specify **Export Path** (.vtr filename)
-2. Click **Export VTR**
-3. File is saved as compressed VTK XML RectilinearGrid
 
 ## Application Architecture
 
@@ -120,9 +137,10 @@ Entry point that parses command-line arguments and launches the Trame server.
 
 ### `web_app.py`
 Core application logic:
-- **`create_server()`**: Initializes the Trame server with UI and VTK rendering
+- **`create_server()`**: Initializes the Trame server with the accordion UI and the VTK rendering pipeline
 - **`run_server()`**: Starts the server with optional host/port configuration
-- Helper functions for data processing, crop handling, and rendering
+- **Controllers** (one per pipeline step): `load_data`, `view_intensity`, `crop_from_roi`, `build_rsm`, `regrid`, `view_rsm`, `refresh_rendering`, `stop_task`, `update_slices`, `export_vtr`
+- Helper functions for data loading, setup-field population, crop handling, volume rendering, and orthogonal/cylindrical/spherical slicing
 
 ### Integration with `napari_resview`
 - **Loaders**: `RSMDataLoader_ISR`, `RSMDataloader_CMS` – load experimental data
@@ -132,52 +150,30 @@ Core application logic:
 ## Technical Details
 
 ### Python Environment
-- Uses Python 3.11 from `.venv3` (custom module shim avoids requiring Napari in the environment)
-- Dynamically creates `napari_resview` package namespace to import backend modules without Napari dependency
+- Uses the Pixi-managed environment in `.pixi/envs/default` (Python 3.11)
+- Dynamically creates the `napari_resview` package namespace to import the backend modules without a Napari dependency
 
 ### VTK Rendering
-- **vtkSmartVolumeMapper**: GPU-accelerated composite blending
+- **vtkSmartVolumeMapper**: GPU-accelerated volume rendering (composite / MIP / attenuated MIP)
 - **vtkImageData**: Regular grid representation of 3D RSM volumes
-- **Trame VtkRemoteView**: Sends rendered images to the browser client
+- **vtkImageResliceMapper / vtkImageSlice**: Orthogonal plane slicing in the Analysis tab
+- **vtkCylinderSource / vtkSphereSource + vtkProbeFilter**: Cylindrical and spherical surface sampling
+- **vtkLookupTable**: Maps scalar values to colors for slice surfaces
+- **Trame VtkRemoteView**: Streams off-screen rendered frames to the browser client
 
 ### Trame UI
 - **DivLayout**: Simple HTML container layout
-- **html widgets**: Lightweight interactive controls (inputs, selects, buttons)
+- **Accordion control panel**: Four stacked tabs (Data / Build / View / Analysis), each a header bar plus a `v_show`-gated panel; only one tab is open at a time
+- **html widgets**: Lightweight interactive controls (inputs, selects, buttons, checkboxes)
 - **State binding**: Two-way synchronization between UI controls and server state
-- **Controllers**: Server-side handlers for load, export, and rendering actions
-
-## Workflow Example
-
-```bash
-# 1. Launch the app
-./.venv3/bin/python main.py
-
-# 2. In the browser that opens:
-#    - Set loader mode to "CMS"
-#    - Enter paths:
-#      setup_path: /data/setup.yaml
-#      tiff_dir: /data/tiffs/
-#    - Leave spec_path empty (CMS doesn't need it)
-#    - Click "Load and Build RSM"
-
-# 3. Wait for regridding to complete (status updates in real-time)
-
-# 4. Interact with the 3D volume:
-#    - Drag to rotate
-#    - Scroll to zoom
-#    - Adjust opacity/colormap as desired
-
-# 5. Export when ready:
-#    - Set export path: /output/my_rsm.vtr
-#    - Click "Export VTR"
-```
+- **Controllers**: Server-side handlers for each pipeline step (load, build, regrid, view, slicing, export)
 
 ## Troubleshooting
 
 ### App Won't Start
-- Ensure `.venv3` is activated: `source ./.venv3/bin/activate`
-- Check Python version: `python --version` should show 3.11.x
-- Verify imports: `./.venv3/bin/python -c "import web_app; print('OK')"`
+- Ensure the Pixi environment is installed: `pixi install`
+- Check Python version: `pixi run python --version` should show 3.11.x
+- Verify imports: `pixi run python -c "import web_app; print('OK')"`
 
 ### Data Load Fails
 - Verify file paths are absolute and correct
@@ -192,9 +188,8 @@ Core application logic:
 
 ## Future Improvements (Deferred)
 
-- **Modularity**: Refactor into package structure with separate UI and backend modules
-- **Advanced Controls**: Per-frame visualization, ROI-based slicing
-- **Performance**: Async loading for large datasets, caching strategies
+- **Modularity**: Refactor into a package structure with separate UI and backend modules
+- **Performance**: Async/streamed loading for large datasets, caching strategies
 - **Export Formats**: FITS, NetCDF, raw binary alongside VTR
 
 ## References
