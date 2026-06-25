@@ -384,6 +384,9 @@ def create_server():
     state.setdefault("intensity_slider_show", False)
     state.setdefault("intensity_frame_index", 0)
     state.setdefault("intensity_frame_max", 0)
+    # True while the frame slider is auto-advancing (Play). Drives the
+    # play/stop button label and the playback loop's keep-running check.
+    state.setdefault("intensity_playing", False)
     state.setdefault("ambient", 0.2)
     state.setdefault("diffuse", 0.7)
     state.setdefault("specular", 0.3)
@@ -493,6 +496,8 @@ def create_server():
     render_range = None
     # In-flight asyncio task, tracked so the Stop button can cancel it.
     current_task = None
+    # In-flight frame-playback task (Play button); tracked so it can be cancelled.
+    play_task = None
     # Defer VtkRemoteView creation until the UI context is built
     remote_view = None
     # how to instantiate remote_view: it needs the render_window, but that needs to be created after the trame server is running. So we create it here as None, and then assign it inside the DivLayout context manager where we have access to the server.
@@ -551,6 +556,7 @@ def create_server():
         # Switching to a volume view supersedes the 2D intensity-frame viewer.
         intensity_actor.VisibilityOff()
         state.intensity_slider_show = False
+        state.intensity_playing = False  # halt any in-progress frame playback
         current_volume = np.asarray(volume, dtype=np.float32)
         current_axes = axes
 
@@ -1032,6 +1038,46 @@ def create_server():
             return
         _show_intensity_frame(int(_float(intensity_frame_index, 0)))
 
+    async def _play_loop():
+        """Advance the frame slider at 10 fps, looping back to 0 at the end."""
+        nonlocal play_task
+        period = 0.1  # seconds between frames -> 10 frames per second
+        try:
+            while bool(getattr(state, "intensity_playing", False)):
+                frame_max = int(_float(getattr(state, "intensity_frame_max", 0), 0))
+                if frame_max <= 0 or not current_frames:
+                    break
+                cur = int(_float(getattr(state, "intensity_frame_index", 0), 0))
+                nxt = cur + 1 if cur < frame_max else 0
+                # Mutating + flushing inside `with state:` triggers the
+                # intensity_frame_index change handler, which renders the frame.
+                with state:
+                    state.intensity_frame_index = nxt
+                await asyncio.sleep(period)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            play_task = None
+            with state:
+                state.intensity_playing = False
+
+    @ctrl.set("toggle_play")
+    def toggle_play(**kwargs):
+        """Toggle automatic frame playback (Play <-> Stop)."""
+        nonlocal play_task
+        if bool(getattr(state, "intensity_playing", False)):
+            state.intensity_playing = False
+            if play_task is not None:
+                play_task.cancel()
+                play_task = None
+            return
+        if not current_frames or not bool(getattr(state, "intensity_slider_show", False)):
+            _set_status("Start the intensity viewer (View Intensity) before playing.")
+            return
+        state.intensity_playing = True
+        loop = asyncio.get_event_loop()
+        play_task = loop.create_task(_play_loop())
+
     @ctrl.set("crop_from_roi")
     def crop_from_roi(**kwargs):
         nonlocal current_df, current_frames, current_builder, regrid_volume, regrid_axes
@@ -1254,6 +1300,19 @@ def create_server():
             "* { box-sizing: border-box; }"
             "html, body { margin: 0; height: 100%; font-family: sans-serif; }"
             "input, select, button, textarea { font-family: inherit; }"
+            # Long rectangular frame slider: flat rectangular track with a
+            # rectangular thumb sized to sit inside the bar.
+            "input.frame-slider { -webkit-appearance: none; appearance: none; "
+            "width: 100%; height: 22px; background: transparent; cursor: pointer; margin: 0; }"
+            "input.frame-slider::-webkit-slider-runnable-track { height: 22px; "
+            "background: #2a2a2e; border: 1px solid #44444a; border-radius: 2px; }"
+            "input.frame-slider::-webkit-slider-thumb { -webkit-appearance: none; "
+            "appearance: none; width: 16px; height: 20px; margin-top: 1px; "
+            "background: #6aa9ff; border: 1px solid #cfe2ff; border-radius: 2px; }"
+            "input.frame-slider::-moz-range-track { height: 22px; background: #2a2a2e; "
+            "border: 1px solid #44444a; border-radius: 2px; }"
+            "input.frame-slider::-moz-range-thumb { width: 16px; height: 20px; border: none; "
+            "background: #6aa9ff; border: 1px solid #cfe2ff; border-radius: 2px; }"
         )
         with html.Div(  # top header bar with the sidebar toggle and title
             style=(
@@ -1595,9 +1654,22 @@ def create_server():
                         "border-top:1px solid #2a2a2e; font-family:sans-serif;"
                     ),
                 ):
+                    html.Button(
+                        "{{ intensity_playing ? '\u23F9' : '\u25B6' }}",
+                        click=ctrl.toggle_play,
+                        title="Play / Stop (10 fps, loops)",
+                        style=(
+                            "flex:0 0 auto; width:32px; height:28px; padding:0; "
+                            "display:flex; align-items:center; justify-content:center; "
+                            "font-size:1rem; line-height:1; cursor:pointer; "
+                            "background:#2a2a2e; color:#dddddd; "
+                            "border:1px solid #44444a; border-radius:4px;"
+                        ),
+                    )
                     html.Span("Frame", style="font-size:0.85rem;")
                     html.Input(
                         type="range",
+                        classes="frame-slider",
                         v_model=("intensity_frame_index", 0),
                         min=0,
                         max=("intensity_frame_max", 0),
