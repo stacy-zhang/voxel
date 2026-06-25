@@ -97,7 +97,7 @@ pixi run python main.py --no-browser
    - **YAML Setup**: experiment configuration file
    - **SPEC File**: ISR mode only
    - **Angle Step**: CMS mode only
-3. (Optional) Review/override the **Experimental Setup** fields (distance, pitch,
+3. (Optional) Review/override the range of scans to load and **Experimental Setup** fields (distance, pitch,
    detector height/width, beam-center height/width, energy, wavelength).
 4. Click **Load Data** (loads data only; no rendering yet).
 5. (Optional) Click **View Intensity** to inspect the raw detector frames.

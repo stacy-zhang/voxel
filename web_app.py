@@ -251,6 +251,37 @@ def _scan_numbers_in_dir(tiff_dir: Optional[str]) -> list:
     return sorted(scans)
 
 
+def _parse_scan_list(text: Optional[str]) -> list:
+    """Parse a scan-range string like "17-20, 30" into a sorted list of ints.
+
+    Accepts comma/whitespace-separated single scans ("30") and inclusive
+    ranges ("17-20"). Mirrors the napari widget's parse_scan_list so the web
+    app accepts the same syntax. Raises ValueError on malformed input.
+    """
+    text = _ensure_path(text)
+    if not text:
+        return []
+    out: set = set()
+    for part in re.split(r"[,\s]+", text):
+        if not part:
+            continue
+        if "-" in part:
+            a, b = part.split("-", 1)
+            a, b = a.strip(), b.strip()
+            if a.isdigit() and b.isdigit():
+                lo, hi = int(a), int(b)
+                if lo > hi:
+                    lo, hi = hi, lo
+                out.update(range(lo, hi + 1))
+            else:
+                raise ValueError(f"Bad scan range: '{part}'")
+        elif part.isdigit():
+            out.add(int(part))
+        else:
+            raise ValueError(f"Bad scan id: '{part}'")
+    return sorted(out)
+
+
 # partly copied from resview_widget.py
 DEFAULTS_ENV = "RSM3D_DEFAULTS_YAML"
 # The bundled defaults YAML lives inside the napari_resview package, not next to
@@ -278,12 +309,11 @@ def create_server():
     state.setdefault("tiff_dir", "")
     state.setdefault("spec_path", "")
     state.setdefault("cms_angle_step", 0.50) # range from 0 to 360, default 0.50 (every half-degree)
-    # Scan-number range to load, parsed from the TIFF filenames. 0 means
-    # "unbounded on this side". When a TIFF directory is selected these are
-    # auto-seeded to cover the first DEFAULT_FRAME_COUNT frames so not all
-    # (e.g. 962) frames are loaded at once.
-    state.setdefault("frame_start", 0)
-    state.setdefault("frame_end", 0)
+    # Scan-number selection, parsed from the TIFF filenames. Accepts a single
+    # scan ("30") or an inclusive range / list ("17-20, 30"); empty = all.
+    # Auto-seeded to the first DEFAULT_FRAME_COUNT frames when a TIFF directory
+    # is selected so not all (e.g. 962) frames load at once.
+    state.setdefault("scan_range", "")
     state.setdefault("crop_enabled", False)
     state.setdefault("crop_row_min", 0)
     state.setdefault("crop_row_max", 0)
@@ -709,24 +739,20 @@ def create_server():
     # Data loading helpers
     # ---------------------------------------------------------------------
     def _selected_scans_from_state(tiff_dir):
-        """Resolve the Data-tab scan-number range to an explicit scan list.
+        """Resolve the Data-tab scan-range text to an explicit scan list.
 
-        Parses the scan ids from the TIFF filenames and keeps those within the
-        inclusive [frame_start, frame_end] window. A bound of 0 (or invalid) is
-        treated as "open" on that side. Returns None to load everything.
+        Parses the scan ids from the TIFF filenames and keeps those matching
+        the user's scan-range string (e.g. "17-20, 30"). An empty string loads
+        everything. Raises ValueError on malformed input.
         """
         scans = _scan_numbers_in_dir(tiff_dir)
         if not scans:
             return None
-        smin = int(_float(getattr(state, "frame_start", 0), 0))
-        smax = int(_float(getattr(state, "frame_end", 0), 0))
-        if smin <= 0 and smax <= 0:
+        requested = _parse_scan_list(getattr(state, "scan_range", ""))
+        if not requested:
             return None
-        lo = smin if smin > 0 else min(scans)
-        hi = smax if smax > 0 else max(scans)
-        if lo > hi:
-            lo, hi = hi, lo
-        selected = sorted({s for s in scans if lo <= s <= hi})
+        available = set(scans)
+        selected = sorted(s for s in requested if s in available)
         return selected or None
 
     def _load_experiment(loader_mode):
@@ -1211,8 +1237,7 @@ def create_server():
         if not scans:
             return
         first = scans[:DEFAULT_FRAME_COUNT]
-        state.frame_start = int(first[0])
-        state.frame_end = int(first[-1])
+        state.scan_range = f"{first[0]}-{first[-1]}"
         _set_status(
             f"Found {len(scans)} scan(s); defaulting to the first {len(first)} "
             f"(scans {first[0]}\u2013{first[-1]})."
@@ -1306,18 +1331,13 @@ def create_server():
                         style=_inp + " cursor:pointer;",
                     )
 
-                    html.Label("Scans (start / end, end 0 = all)", style=_lbl)
-                    with html.Div(style="display:flex; gap:8px;"):
-                        html.Input(
-                            v_model=("frame_start", 0),
-                            type="number", min="0", step="1", placeholder="start",
-                            style="flex:1; min-width:0;",
-                        )
-                        html.Input(
-                            v_model=("frame_end", 0),
-                            type="number", min="0", step="1", placeholder="end",
-                            style="flex:1; min-width:0;",
-                        )
+                    html.Label("Scans", style=_lbl)
+                    html.Input(
+                        v_model=("scan_range", ""),
+                        type="text",
+                        placeholder="e.g. 17-20, 30 (blank = all)",
+                        style=_inp,
+                    )
 
                     with html.Div(v_show="loader_mode === 'ISR'"):
                         html.Label("SPEC file (ISR only)", style=_lbl)
