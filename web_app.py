@@ -1198,8 +1198,14 @@ def create_server():
         ys = [c[1] for c in corners]
         col_lo = max(0, min(int(round(min(xs))), intensity_nx - 1))
         col_hi = max(0, min(int(round(max(xs))), intensity_nx - 1))
-        row_lo = max(0, min(int(round(min(ys))), intensity_ny - 1))
-        row_hi = max(0, min(int(round(max(ys))), intensity_ny - 1))
+        # The displayed frame is flipped vertically (see _show_intensity_frame)
+        # to match napari's top-left origin, so the ROI's world-space rows are
+        # measured from the bottom. Convert them back to original top-down frame
+        # rows so the crop extracts the region the user actually selected.
+        disp_row_lo = max(0, min(int(round(min(ys))), intensity_ny - 1))
+        disp_row_hi = max(0, min(int(round(max(ys))), intensity_ny - 1))
+        row_lo = (intensity_ny - 1) - disp_row_hi
+        row_hi = (intensity_ny - 1) - disp_row_lo
         if col_hi <= col_lo:
             col_hi = min(intensity_nx - 1, col_lo + 1)
         if row_hi <= row_lo:
@@ -1383,6 +1389,13 @@ def create_server():
 
         ny, nx = disp.shape
         intensity_nx, intensity_ny = nx, ny
+        # napari places row 0 at the TOP (origin at the top-left corner), but
+        # VTK's image space puts +y upward, so row 0 would otherwise render at
+        # the bottom. Flip the frame vertically before handing it to VTK so the
+        # web view matches napari's orientation. The ROI->crop mapping in
+        # _roi_update_crop_state inverts this flip to keep crop indices in the
+        # original (top-down) frame coordinates.
+        disp = disp[::-1, :]
         image = vtkImageData()
         image.SetDimensions(nx, ny, 1)
         image.SetSpacing(1.0, 1.0, 1.0)
@@ -1879,7 +1892,7 @@ def create_server():
                         html.Input(v_model=("crop_col_max", ""), type="number", placeholder="right", style="flex:1; min-width:0;")
                     with html.Label(style=_lbl + " display:flex; align-items:center; gap:6px; cursor:pointer;"):
                         html.Input(type="checkbox", v_model=("roi_show", True), style="margin:0; width:auto;")
-                        html.Span("Adjustable ROI box on intensity view")
+                        html.Span("ROI")
                     html.Button("\U0001F532 Crop from ROI", click=ctrl.crop_from_roi, style="width:100%; margin-top:12px; padding:10px 8px; cursor:pointer;")
 
                 # ===================== BUILD TAB =====================
