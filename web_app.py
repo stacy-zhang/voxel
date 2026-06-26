@@ -507,7 +507,7 @@ def create_server():
         "cx": 0.0, "cy": 0.0,        # center (image coords)
         "hw": 0.0, "hh": 0.0,        # half width / half height
         "angle": 0.0,                # radians, CCW
-        "handle_r": 1.0,             # handle disk radius (world units)
+        "handle_r": 0.5,             # handle disk radius (world units)
         "z": 1.0,                    # small +z offset so the gizmo draws on top
         "grab": None,                # which part is being dragged
         "grab_offset": (0.0, 0.0),
@@ -531,8 +531,8 @@ def create_server():
     roi_outline_mapper.SetInputData(roi_outline_poly)
     roi_outline_actor = vtkActor()
     roi_outline_actor.SetMapper(roi_outline_mapper)
-    roi_outline_actor.GetProperty().SetColor(1.0, 0.9, 0.1)
-    roi_outline_actor.GetProperty().SetLineWidth(2.0)
+    roi_outline_actor.GetProperty().SetColor(1.0, 1.0, 1.0)
+    roi_outline_actor.GetProperty().SetLineWidth(1.5)
     roi_outline_actor.GetProperty().LightingOff()
     roi_outline_actor.PickableOff()
     roi_outline_actor.VisibilityOff()
@@ -547,7 +547,7 @@ def create_server():
     roi_handle_src.SetNumberOfSides(24)
     roi_handle_src.GeneratePolygonOn()
     roi_handle_src.SetNormal(0.0, 0.0, 1.0)
-    roi_handle_src.SetRadius(1.0)
+    roi_handle_src.SetRadius(0.5)
     roi_handle_glyph = vtkGlyph3D()
     roi_handle_glyph.SetInputData(roi_handle_poly)
     roi_handle_glyph.SetSourceConnection(roi_handle_src.GetOutputPort())
@@ -558,7 +558,7 @@ def create_server():
     roi_handle_mapper.ScalarVisibilityOff()
     roi_handle_actor = vtkActor()
     roi_handle_actor.SetMapper(roi_handle_mapper)
-    roi_handle_actor.GetProperty().SetColor(1.0, 0.9, 0.1)
+    roi_handle_actor.GetProperty().SetColor(1.0, 1.0, 1.0) 
     roi_handle_actor.GetProperty().LightingOff()
     roi_handle_actor.PickableOff()
     roi_handle_actor.VisibilityOff()
@@ -569,13 +569,13 @@ def create_server():
     roi_rot_src.SetNumberOfSides(24)
     roi_rot_src.GeneratePolygonOn()
     roi_rot_src.SetNormal(0.0, 0.0, 1.0)
-    roi_rot_src.SetRadius(1.0)
+    roi_rot_src.SetRadius(0.5)
     roi_rot_mapper = vtkPolyDataMapper()
     roi_rot_mapper.SetInputConnection(roi_rot_src.GetOutputPort())
     roi_rot_mapper.ScalarVisibilityOff()
     roi_rot_actor = vtkActor()
     roi_rot_actor.SetMapper(roi_rot_mapper)
-    roi_rot_actor.GetProperty().SetColor(0.3, 1.0, 0.45)
+    roi_rot_actor.GetProperty().SetColor(1.0, 1.0, 1.0)
     roi_rot_actor.GetProperty().LightingOff()
     roi_rot_actor.PickableOff()
     roi_rot_actor.VisibilityOff()
@@ -595,7 +595,7 @@ def create_server():
     roi_rotline_mapper.SetInputData(roi_rotline_poly)
     roi_rotline_actor = vtkActor()
     roi_rotline_actor.SetMapper(roi_rotline_mapper)
-    roi_rotline_actor.GetProperty().SetColor(0.3, 1.0, 0.45)
+    roi_rotline_actor.GetProperty().SetColor(1.0, 1.0, 1.0)
     roi_rotline_actor.GetProperty().SetLineWidth(1.5)
     roi_rotline_actor.GetProperty().LightingOff()
     roi_rotline_actor.PickableOff()
@@ -1230,7 +1230,20 @@ def create_server():
         roi_state["hw"] = max(MIN_HALF, nx * 0.3)
         roi_state["hh"] = max(MIN_HALF, ny * 0.3)
         roi_state["angle"] = 0.0
-        roi_state["handle_r"] = max(2.0, 0.012 * max(nx, ny))
+        # Size the handle disks from the current camera zoom (parallel scale =
+        # half the world-height filling the viewport) so they keep a constant
+        # on-screen size across successive crops, matching the fixed-pixel line
+        # width. Falls back to the frame size if projection isn't parallel yet.
+        cam = renderer.GetActiveCamera()
+        if cam.GetParallelProjection():
+            ps = cam.GetParallelScale()
+        else:
+            ps = max(nx, ny) * 0.5
+        # Pure fraction of the zoom (parallel scale) => constant on-screen size.
+        # Do NOT clamp to a world-unit floor: on a small (heavily cropped) frame
+        # the zoom is large, so a fixed world floor would render as huge disks
+        # that swamp the box. Guard only against a non-positive scale.
+        roi_state["handle_r"] = max(ps, 1e-6) * 0.02
         roi_state["z"] = max(1.0, 0.01 * max(nx, ny))
         roi_state["grab"] = None
         roi_handle_src.SetRadius(roi_state["handle_r"])
@@ -1420,10 +1433,26 @@ def create_server():
         intensity_actor.VisibilityOn()
 
         if reset_camera:
-            # Parallel projection + a straight-on reset keeps the display<->image
-            # coordinate mapping exact (and linear) for the ROI selector.
-            renderer.GetActiveCamera().ParallelProjectionOn()
-            renderer.ResetCamera()
+            # Place the camera deterministically straight-on over the frame
+            # using parallel projection. We size the view directly from the
+            # frame dimensions and the viewport aspect instead of ResetCamera()
+            # so the zoom depends ONLY on the current frame -- not on any other
+            # visible prop (e.g. a stale ROI box). This keeps the screen<->image
+            # mapping exact and gives a stable parallel scale, so the ROI handle
+            # disks keep a constant on-screen size across successive crops.
+            cam = renderer.GetActiveCamera()
+            cam.ParallelProjectionOn()
+            cx = (nx - 1) / 2.0
+            cy = (ny - 1) / 2.0
+            cam.SetFocalPoint(cx, cy, 0.0)
+            cam.SetPosition(cx, cy, float(max(nx, ny) + 10))
+            cam.SetViewUp(0.0, 1.0, 0.0)
+            win_w, win_h = render_window.GetSize()
+            aspect = (win_w / win_h) if win_h else 1.0
+            half_h = ny / 2.0
+            half_w = (nx / 2.0) / aspect if aspect else nx / 2.0
+            cam.SetParallelScale(max(half_h, half_w) * 1.05)
+            renderer.ResetCameraClippingRange()
         render_window.Render()
         if remote_view is not None:
             remote_view.update()
@@ -1539,6 +1568,10 @@ def create_server():
                 idx = max(0, min(idx, n - 1))
                 if int(_float(getattr(state, "intensity_frame_index", 0), 0)) != idx:
                     state.intensity_frame_index = idx
+                # Hide the ROI before re-rendering so the stale box (still sized
+                # for the previous frame) is never drawn in the new view; it is
+                # re-created at the correct place/size right after.
+                _roi_set_active(False)
                 _show_intensity_frame(idx, reset_camera=True)
                 if bool(getattr(state, "roi_show", True)):
                     _roi_init_geometry()
