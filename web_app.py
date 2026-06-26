@@ -1579,7 +1579,7 @@ def create_server():
                     _roi_update_crop_state()
                 _roi_render()
             _set_status(
-                f"Crop applied: rows [{r0}, {r1}), cols [{c0}, {c1}). Rebuild required."
+                f"Crop applied: y=[{r0}, {r1}), x=[{c0}, {c1}), detector={c1-c0}x{r1-r0}"
             )
         except Exception as exc:
             _set_status(f"Crop error: {exc}")
