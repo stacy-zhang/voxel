@@ -691,6 +691,40 @@ def create_server():
     roi_rotline_actor.VisibilityOff()
     renderer.AddActor(roi_rotline_actor)
 
+    # --- Intensity beam-center cross --------------------------------------
+    # Two perpendicular line segments marking the beam center over the
+    # intensity frame (mirrors the napari "Beam Center" shapes layer).
+    # Dragging the cross updates the Data-tab beam-center inputs, and editing
+    # those inputs moves the cross.
+    cross_state = {
+        "active": False,
+        "cx": 0.0, "cy": 0.0,   # display-space image coords (x=col, y=flipped row)
+        "size": 20.0,           # half-length of each arm (world units)
+        "z": 1.0,               # small +z offset so it draws on top of the frame
+        "grab": False,          # True while the user is dragging the cross
+    }
+    cross_pts = vtkPoints()
+    cross_pts.SetNumberOfPoints(4)
+    cross_poly = vtkPolyData()
+    cross_poly.SetPoints(cross_pts)
+    _cross_cells = vtkCellArray()
+    for _a, _b in ((0, 1), (2, 3)):
+        _cross_seg = vtkLine()
+        _cross_seg.GetPointIds().SetId(0, _a)
+        _cross_seg.GetPointIds().SetId(1, _b)
+        _cross_cells.InsertNextCell(_cross_seg)
+    cross_poly.SetLines(_cross_cells)
+    cross_mapper = vtkPolyDataMapper()
+    cross_mapper.SetInputData(cross_poly)
+    cross_actor = vtkActor()
+    cross_actor.SetMapper(cross_mapper)
+    cross_actor.GetProperty().SetColor(1.0, 0.25, 0.25)
+    cross_actor.GetProperty().SetLineWidth(2.0)
+    cross_actor.GetProperty().LightingOff()
+    cross_actor.PickableOff()
+    cross_actor.VisibilityOff()
+    renderer.AddActor(cross_actor)
+
     # Interactor styles: the default trackball drives the 3D volume; a no-op
     # style locks the camera straight-on while the 2D ROI selector is active so
     # the screen<->image coordinate mapping stays exact.
@@ -780,6 +814,7 @@ def create_server():
         # Switching to a volume view supersedes the 2D intensity-frame viewer.
         intensity_actor.VisibilityOff()
         _roi_set_active(False)  # the ROI selector only applies to the intensity view
+        _cross_set_active(False)  # the beam-center cross only applies to the intensity view
         renderer.GetActiveCamera().ParallelProjectionOff()  # restore 3D perspective
         state.intensity_slider_show = False
         state.intensity_playing = False  # halt any in-progress frame playback
@@ -1396,21 +1431,108 @@ def create_server():
         roi_handle_src.SetRadius(roi_state["handle_r"])
         roi_rot_src.SetRadius(roi_state["handle_r"])
 
+    def _update_interactor_style():
+        # Lock the camera straight-on while either the ROI selector or the
+        # beam-center cross is active so the screen<->image mapping used for
+        # dragging stays exact; otherwise restore the 3D trackball.
+        if roi_state["active"] or cross_state["active"]:
+            interactor.SetInteractorStyle(roi_lock_style)
+        else:
+            interactor.SetInteractorStyle(roi_trackball_style)
+
     def _roi_set_active(active):
         roi_state["active"] = bool(active)
         if active:
-            interactor.SetInteractorStyle(roi_lock_style)
             _roi_set_visible(True)
             _roi_refresh_actors()
         else:
             roi_state["grab"] = None
             _roi_set_visible(False)
-            interactor.SetInteractorStyle(roi_trackball_style)
+        _update_interactor_style()
+
+    # --- Beam-center cross helpers -----------------------------------------
+    def _cross_position_from_state():
+        """Place the cross at the beam center stored in exp_bc_w / exp_bc_h."""
+        if intensity_nx is None or intensity_ny is None:
+            return
+        nx, ny = intensity_nx, intensity_ny
+        col = max(0, min(int(_float(getattr(state, "exp_bc_w", 0), 0)), nx - 1))
+        row = max(0, min(int(_float(getattr(state, "exp_bc_h", 0), 0)), ny - 1))
+        cross_state["cx"] = float(col)
+        # The frame is displayed vertically flipped, so the world row is
+        # measured from the bottom (see _show_intensity_frame).
+        cross_state["cy"] = float((ny - 1) - row)
+
+    def _cross_refresh_actors():
+        cx, cy = cross_state["cx"], cross_state["cy"]
+        s = cross_state["size"]
+        z = cross_state["z"]
+        cross_pts.SetPoint(0, cx, cy - s, z)
+        cross_pts.SetPoint(1, cx, cy + s, z)
+        cross_pts.SetPoint(2, cx - s, cy, z)
+        cross_pts.SetPoint(3, cx + s, cy, z)
+        cross_pts.Modified()
+
+    def _cross_init_geometry():
+        nx = intensity_nx or 1
+        ny = intensity_ny or 1
+        cross_state["size"] = max(5.0, min(nx, ny) * 0.08)
+        cross_state["z"] = max(1.0, 0.01 * max(nx, ny)) + 0.5
+        cross_state["grab"] = False
+        _cross_position_from_state()
+        _cross_refresh_actors()
+
+    def _cross_set_active(active):
+        cross_state["active"] = bool(active)
+        cross_actor.SetVisibility(1 if active else 0)
+        if not active:
+            cross_state["grab"] = False
+        _update_interactor_style()
+
+    def _seg_dist(px, py, a, b):
+        """Distance from point (px, py) to the segment a->b (display space)."""
+        ax, ay = a
+        bx, by = b
+        vx, vy = bx - ax, by - ay
+        wx, wy = px - ax, py - ay
+        denom = vx * vx + vy * vy
+        t = 0.0 if denom == 0 else max(0.0, min(1.0, (wx * vx + wy * vy) / denom))
+        qx, qy = ax + t * vx, ay + t * vy
+        return math.hypot(px - qx, py - qy)
+
+    def _cross_hit_test(dx, dy):
+        cx, cy, s = cross_state["cx"], cross_state["cy"], cross_state["size"]
+        top = _world_to_display(cx, cy + s)
+        bot = _world_to_display(cx, cy - s)
+        left = _world_to_display(cx - s, cy)
+        right = _world_to_display(cx + s, cy)
+        d = min(_seg_dist(dx, dy, top, bot), _seg_dist(dx, dy, left, right))
+        return d <= 9.0
+
+    def _cross_set_world(wx, wy):
+        if intensity_nx is None or intensity_ny is None:
+            return
+        nx, ny = intensity_nx, intensity_ny
+        col = int(round(max(0.0, min(wx, nx - 1))))
+        disp_row = int(round(max(0.0, min(wy, ny - 1))))
+        cross_state["cx"] = float(col)
+        cross_state["cy"] = float(disp_row)
+        _cross_refresh_actors()
+        # Convert the displayed (flipped) row back to the original frame row
+        # before pushing it to the Data-tab beam-center inputs.
+        state.exp_bc_w = col
+        state.exp_bc_h = (ny - 1) - disp_row
+        state.flush()
+        _roi_render()
 
     def _roi_on_press(obj, event):
+        dx, dy = interactor.GetEventPosition()
+        # The beam-center cross takes priority over the ROI body.
+        if cross_state["active"] and _cross_hit_test(dx, dy):
+            cross_state["grab"] = True
+            return
         if not roi_state["active"]:
             return
-        dx, dy = interactor.GetEventPosition()
         grab = _roi_hit_test(dx, dy)
         roi_state["grab"] = grab
         if grab is None:
@@ -1423,9 +1545,13 @@ def create_server():
             roi_state["fixed"] = _roi_corners()[opp]
 
     def _roi_on_move(obj, event):
+        dx, dy = interactor.GetEventPosition()
+        if cross_state["active"] and cross_state["grab"]:
+            wx, wy = _display_to_world(dx, dy)
+            _cross_set_world(wx, wy)
+            return
         if not roi_state["active"] or roi_state["grab"] is None:
             return
-        dx, dy = interactor.GetEventPosition()
         wx, wy = _display_to_world(dx, dy)
         g = roi_state["grab"]
         (ux, uy), (vx, vy) = _roi_axes()
@@ -1463,6 +1589,9 @@ def create_server():
         _roi_render()
 
     def _roi_on_release(obj, event):
+        if cross_state["active"] and cross_state["grab"]:
+            cross_state["grab"] = False
+            return
         if roi_state["grab"] is not None:
             roi_state["grab"] = None
             _roi_update_crop_state()
@@ -1485,6 +1614,16 @@ def create_server():
             _roi_update_crop_state()
         else:
             _roi_set_active(False)
+        _roi_render()
+
+    @state.change("exp_bc_w", "exp_bc_h")
+    def _on_beam_center_change(**kwargs):
+        # Reposition the cross when the user edits the beam-center inputs.
+        # Skip while the cross is being dragged (the drag already set these).
+        if not cross_state["active"] or cross_state["grab"]:
+            return
+        _cross_position_from_state()
+        _cross_refresh_actors()
         _roi_render()
 
     @ctrl.set("view_intensity")
@@ -1510,6 +1649,10 @@ def create_server():
         except Exception as exc:
             _set_status(f"Intensity view error: {exc}")
             return
+        # Beam-center cross marker, always shown over the 2D frame so the user
+        # can drag it to set the beam center (updates the Data-tab inputs).
+        _cross_init_geometry()
+        _cross_set_active(True)
         # Drop an adjustable ROI box on the frame and seed the Crop inputs from
         # it so the user can move/resize/rotate it to refine the crop.
         if bool(getattr(state, "roi_show", True)):
@@ -1720,6 +1863,10 @@ def create_server():
                 # re-created at the correct place/size right after.
                 _roi_set_active(False)
                 _show_intensity_frame(idx, reset_camera=True)
+                # Re-place the beam-center cross for the cropped frame (its
+                # dimensions and the beam center both changed).
+                _cross_init_geometry()
+                _cross_set_active(True)
                 if bool(getattr(state, "roi_show", True)):
                     _roi_init_geometry()
                     _roi_set_active(True)
