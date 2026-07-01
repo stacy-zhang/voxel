@@ -451,6 +451,10 @@ def create_server():
     state.setdefault("contrast_lo", 1.0)
     state.setdefault("contrast_hi", 99.8)
     state.setdefault("export_path", str(Path.cwd() / "rsm_output.vtr"))
+    # Grid (TIFF) and grid+edges (NPZ) export paths, mirroring the napari
+    # widget's Export section.
+    state.setdefault("export_tiff_path", str(Path.cwd() / "rsm_grid.tiff"))
+    state.setdefault("export_npz_path", str(Path.cwd() / "rsm_grid.npz"))
 
     # Analysis tab
     ## orthogonal slicing (positions are 0-100)
@@ -2038,15 +2042,34 @@ def create_server():
                     state.intensity_frame_index = idx
                 # Hide the ROI before re-rendering so the stale box (still sized
                 # for the previous frame) is never drawn in the new view; it is
-                # re-created at the correct place/size right after.
+                # re-placed at the correct spot right after.
                 _roi_set_active(False)
+                # Capture the OLD frame height before the redisplay overwrites
+                # intensity_ny; it is needed to remap the ROI through the
+                # vertical flip into the cropped frame's coordinates.
+                h_old = intensity_ny
                 _show_intensity_frame(idx, reset_camera=True)
                 # Re-place the beam-center cross for the cropped frame (its
                 # dimensions and the beam center both changed).
                 _cross_init_geometry()
                 _cross_set_active(True)
                 if bool(getattr(state, "roi_show", True)):
-                    _roi_init_geometry()
+                    # Keep the ROI box over the same physical region of the
+                    # (now cropped) intensity map instead of snapping back to a
+                    # default centered box (mirrors the beam-center cross).
+                    # Columns shift by the crop origin c0; because the frame is
+                    # displayed vertically flipped, world-y shifts by
+                    # (r1 - h_old). Box size and rotation are unchanged.
+                    old_cx, old_cy = roi_state["cx"], roi_state["cy"]
+                    old_hw, old_hh = roi_state["hw"], roi_state["hh"]
+                    old_angle = roi_state["angle"]
+                    _roi_init_geometry()  # recompute handle_r / z for new frame+zoom
+                    if h_old is not None:
+                        roi_state["cx"] = old_cx - c0
+                        roi_state["cy"] = old_cy - (h_old - r1)
+                        roi_state["hw"] = old_hw
+                        roi_state["hh"] = old_hh
+                        roi_state["angle"] = old_angle
                     _roi_set_active(True)
                     _roi_update_crop_state()
                 _roi_render()
@@ -2085,6 +2108,72 @@ def create_server():
             )
             state.export_path = str(output_path)
             _set_status(f"Exported VTR to {output_path}")
+        except Exception as exc:
+            _set_status(f"Export failed: {exc}")
+
+    @ctrl.set("export_tiff")
+    async def export_tiff(**kwargs):
+        # Export the raw regridded 3D grid as a compressed TIFF (mirrors the
+        # napari widget's on_export_grid).
+        if regrid_volume is None:
+            _set_status("Regrid first, then export.")
+            return
+        try:
+            import tifffile
+        except ImportError:
+            _set_status("Export failed: tifffile is not installed.")
+            return
+        output_path = Path(_ensure_path(state.export_tiff_path))
+        if output_path.suffix.lower() not in (".tif", ".tiff"):
+            output_path = output_path.with_suffix(".tiff")
+        grid_data = np.asarray(regrid_volume)
+        loop = asyncio.get_event_loop()
+        try:
+            _set_status(f"Exporting grid TIFF to {output_path}...")
+            await loop.run_in_executor(
+                None,
+                lambda: tifffile.imwrite(str(output_path), grid_data, compression="zlib"),
+            )
+            state.export_tiff_path = str(output_path)
+            _set_status(f"Exported grid TIFF to {output_path}")
+        except Exception as exc:
+            _set_status(f"Export grid failed: {exc}")
+
+    @ctrl.set("export_npz")
+    async def export_npz(**kwargs):
+        # Export the grid together with its coordinate axes as a compressed
+        # .npz (mirrors the napari widget's on_export_edges). Axis names follow
+        # the chosen space: Qx/Qy/Qz for q-space, H/K/L for hkl.
+        if regrid_volume is None or regrid_axes is None:
+            _set_status("Regrid first, then export.")
+            return
+        output_path = Path(_ensure_path(state.export_npz_path))
+        if output_path.suffix.lower() != ".npz":
+            output_path = output_path.with_suffix(".npz")
+        grid_data = np.asarray(regrid_volume)
+        xaxis, yaxis, zaxis = regrid_axes
+        space = _ensure_path(state.space).lower()
+        loop = asyncio.get_event_loop()
+        try:
+            _set_status(f"Exporting grid+edges NPZ to {output_path}...")
+            if space == "q":
+                await loop.run_in_executor(
+                    None,
+                    lambda: np.savez_compressed(
+                        str(output_path), grid=grid_data, Qx=xaxis, Qy=yaxis, Qz=zaxis
+                    ),
+                )
+                label = "Qx, Qy, Qz"
+            else:
+                await loop.run_in_executor(
+                    None,
+                    lambda: np.savez_compressed(
+                        str(output_path), grid=grid_data, H=xaxis, K=yaxis, L=zaxis
+                    ),
+                )
+                label = "H, K, L"
+            state.export_npz_path = str(output_path)
+            _set_status(f"Exported grid+edges ({label}) to {output_path}")
         except Exception as exc:
             _set_status(f"Export failed: {exc}")
 
@@ -2489,6 +2578,12 @@ def create_server():
                     html.Label("Export path", style=_lbl)
                     html.Input(v_model=("export_path", ""), placeholder="/path/to/output.vtr", style=_inp)
                     html.Button("\U0001F4BE Export VTR", click=ctrl.export_vtr, style="width:100%; margin-top:12px; padding:10px 8px; cursor:pointer;")
+                    html.Label("Grid (.tiff)", style=_lbl)
+                    html.Input(v_model=("export_tiff_path", ""), placeholder="/path/to/grid.tiff", style=_inp)
+                    html.Button("\U0001F4BE Export TIFF", click=ctrl.export_tiff, style="width:100%; margin-top:12px; padding:10px 8px; cursor:pointer;")
+                    html.Label("Grid+Edges (.npz)", style=_lbl)
+                    html.Input(v_model=("export_npz_path", ""), placeholder="/path/to/grid.npz", style=_inp)
+                    html.Button("\U0001F4BE Export NPZ", click=ctrl.export_npz, style="width:100%; margin-top:12px; padding:10px 8px; cursor:pointer;")
 
                 # ===================== ANALYSIS TAB =====================
                 with html.Div(
