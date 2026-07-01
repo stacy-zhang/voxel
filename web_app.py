@@ -1406,7 +1406,7 @@ def create_server():
             return
         loop = asyncio.get_event_loop()
         try:
-            shape_label = ", ".join("*" if d is None else str(d) for d in grid_shape)
+            shape_label = ",".join("*" if d is None else str(d) for d in grid_shape)
             _set_status(f"Regridding to ({shape_label}) volume...")
             volume, axes = await loop.run_in_executor(
                 None, _regrid_volume, current_builder, grid_shape
@@ -2630,7 +2630,7 @@ def create_server():
                         html.Input(v_model=("cyl_show", ""), type="checkbox", change=ctrl.update_slices, style="margin-right:8px;")
                         html.Span("Show cylinder")
                     html.Label("Cylinder radius (\u00c5\u207b\u00b9)", style=_lbl)
-                    html.Input(v_model=("cyl_radius", ""), type="number", min="0", step="0.01", change=ctrl.update_slices, style=_inp)
+                    html.Input(v_model=("cyl_radius", ""), type="number", min="0", max="10", step="0.01", change=ctrl.update_slices, style=_inp)
                     html.Label("Angular samples", style=_lbl)
                     html.Input(v_model=("cyl_samples", ""), type="number", min="16", max="360", step="8", change=ctrl.update_slices, style=_inp)
                     html.Label("Opacity", style=_lbl)
@@ -2646,7 +2646,7 @@ def create_server():
                         html.Input(v_model=("sph_show", ""), type="checkbox", change=ctrl.update_slices, style="margin-right:8px;")
                         html.Span("Show sphere")
                     html.Label("Sphere radius (\u00c5\u207b\u00b9)", style=_lbl)
-                    html.Input(v_model=("sph_radius", ""), type="number", min="0", step="0.01", change=ctrl.update_slices, style=_inp)
+                    html.Input(v_model=("sph_radius", ""), type="number", min="0", max="10", step="0.01", change=ctrl.update_slices, style=_inp)
                     html.Label("Angular samples", style=_lbl)
                     html.Input(v_model=("sph_samples", ""), type="number", min="16", max="180", step="8", change=ctrl.update_slices, style=_inp)
                     html.Label("Opacity", style=_lbl)
