@@ -535,6 +535,11 @@ def create_server():
     state.setdefault("progress_active", False)
     state.setdefault("progress_value", 0.0)
     state.setdefault("progress_label", "")
+    # When True the bar shows an indeterminate sliding animation with no number
+    # (used for steps that can't report a real percentage, e.g. load/export).
+    # When False the fill width tracks ``progress_value`` from real per-frame
+    # callbacks (build/regrid).
+    state.setdefault("progress_indeterminate", False)
 
     renderer = vtkRenderer()
     renderer.SetBackground(0.10, 0.10, 0.12)
@@ -781,9 +786,11 @@ def create_server():
     current_task = None
     # In-flight frame-playback task (Play button); tracked so it can be cancelled.
     play_task = None
-    # Background tasks that drive the top-of-viewer progress bar: the ticker
-    # animates the percentage while a job runs, and the hide task clears the bar
-    # a moment after it reaches 100%.
+    # Background tasks that drive the top-of-viewer progress bar. Determinate
+    # steps (build/regrid) advance the percentage directly from per-frame
+    # callbacks, but data loading has no granular progress, so ``progress_task``
+    # runs an easing ticker that creeps toward 92% until the job finishes. The
+    # hide task clears the bar a moment after it reaches 100%.
     progress_task = None
     progress_hide_task = None
     # Defer VtkRemoteView creation until the UI context is built
@@ -1270,7 +1277,8 @@ def create_server():
             _set_status(f"Setup override skipped: {exc}")
 
     def _compute_builder(setup, ub, df, sample_axes, detector_axes,
-                         ub_includes_2pi, center_is_one_based):
+                         ub_includes_2pi, center_is_one_based,
+                         progress_callback=None):
         builder = RSMBuilder(
             setup,
             ub,
@@ -1280,10 +1288,10 @@ def create_server():
             ub_includes_2pi=ub_includes_2pi,
             center_is_one_based=center_is_one_based,
         )
-        builder.compute_full(verbose=False)
+        builder.compute_full(verbose=False, progress_callback=progress_callback)
         return builder
 
-    def _regrid_volume(builder, grid_shape):
+    def _regrid_volume(builder, grid_shape, progress_callback=None):
         fuzzy = bool(getattr(state, "fuzzy_gridder", False))
         kwargs = dict(
             space=_ensure_path(state.space) or "q",
@@ -1299,7 +1307,7 @@ def create_server():
         width = _float(getattr(state, "width_fuzzy", 0.0), 0.0)
         if fuzzy and width > 0:
             kwargs["width"] = width
-        return builder.regrid_xu(**kwargs)
+        return builder.regrid_xu(progress_callback=progress_callback, **kwargs)
 
     def _track(coro):
         """Run a coroutine as a cancellable task (for the Stop button)."""
@@ -1311,22 +1319,33 @@ def create_server():
     # ---------------------------------------------------------------------
     # Progress bar helpers
     # ---------------------------------------------------------------------
-    async def _progress_ticker():
-        """Smoothly advance the progress bar while a background job runs.
+    def _apply_progress_value(pct: float):
+        """Set the determinate progress percentage (runs on the event loop)."""
+        with state:
+            # Cap below 100 while work is ongoing; _stop_progress sets the
+            # final 100 so the bar never shows 100% before the job returns.
+            state.progress_value = round(min(max(float(pct), 0.0), 99.0), 1)
 
-        The bundled loaders/builders don't emit granular progress, so the bar
-        eases asymptotically toward ~92% to convey that work is ongoing.
-        ``_stop_progress`` snaps it to 100% when the job actually finishes.
+    def _make_thread_progress_cb():
+        """Return a thread-safe ``cb(done, total)`` for executor jobs.
+
+        The loaders/builders run in a thread pool, so their per-frame progress
+        must be marshaled back onto the server event loop. Updates are throttled
+        to whole-percent steps to avoid flooding the client with state pushes
+        (a build can iterate hundreds of frames).
         """
-        try:
-            while True:
-                await asyncio.sleep(0.15)
-                v = float(getattr(state, "progress_value", 0.0) or 0.0)
-                v += max(0.4, (92.0 - v) * 0.06)
-                with state:
-                    state.progress_value = round(min(v, 92.0), 1)
-        except asyncio.CancelledError:
-            pass
+        loop = asyncio.get_event_loop()
+        last = {"pct": -1}
+
+        def cb(done, total):
+            pct = 100.0 * float(done) / float(max(1, total))
+            ip = int(pct)
+            if ip <= last["pct"]:
+                return
+            last["pct"] = ip
+            loop.call_soon_threadsafe(_apply_progress_value, pct)
+
+        return cb
 
     async def _hide_progress_later():
         """Clear the finished progress bar after a brief 100% hold."""
@@ -1338,8 +1357,33 @@ def create_server():
             state.progress_active = False
             state.progress_value = 0.0
 
-    def _start_progress(label: str):
-        """Show the progress bar and start animating it for a new job."""
+    async def _progress_ticker():
+        """Ease the progress bar toward ~92% while an untracked job runs.
+
+        Data loading can't report granular progress, so the bar creeps up with
+        a decelerating step (never exceeding 92%) to convey ongoing work.
+        ``_stop_progress`` cancels this and snaps the bar to 100% when the job
+        actually finishes.
+        """
+        try:
+            while True:
+                await asyncio.sleep(0.15)
+                v = float(getattr(state, "progress_value", 0.0) or 0.0)
+                v += max(0.4, (92.0 - v) * 0.06)
+                with state:
+                    state.progress_value = round(min(v, 92.0), 1)
+        except asyncio.CancelledError:
+            pass
+
+    def _start_progress(label: str, indeterminate: bool = False,
+                        ticker: bool = False):
+        """Show the progress bar for a new job.
+
+        ``indeterminate=True`` shows a sliding animation with no number for
+        steps that can't report progress (export). ``ticker=True`` runs the
+        easing ticker toward 92% (data loading). Otherwise the fill tracks
+        ``progress_value``, which a per-frame callback advances (build/regrid).
+        """
         nonlocal progress_task, progress_hide_task
         loop = asyncio.get_event_loop()
         if progress_hide_task is not None:
@@ -1347,11 +1391,14 @@ def create_server():
             progress_hide_task = None
         if progress_task is not None:
             progress_task.cancel()
+            progress_task = None
         state.progress_active = True
+        state.progress_indeterminate = bool(indeterminate)
         state.progress_value = 0.0
         state.progress_label = label
         state.flush()
-        progress_task = loop.create_task(_progress_ticker())
+        if ticker:
+            progress_task = loop.create_task(_progress_ticker())
 
     def _stop_progress(success: bool = True):
         """Finish the current job's progress bar.
@@ -1365,6 +1412,7 @@ def create_server():
             progress_task.cancel()
             progress_task = None
         if success:
+            state.progress_indeterminate = False
             state.progress_value = 100.0
             state.flush()
             progress_hide_task = loop.create_task(_hide_progress_later())
@@ -1398,7 +1446,7 @@ def create_server():
         loop = asyncio.get_event_loop()
         try:
             _set_status("Loading experiment and TIFF frames...")
-            _start_progress("Loading data")
+            _start_progress("Loading data", ticker=True)
             setup, ub, df, frames = await loop.run_in_executor(
                 None, _load_experiment, loader_mode
             )
@@ -1457,6 +1505,7 @@ def create_server():
         try:
             _set_status("Computing Q/HKL mapping...")
             _start_progress("Building RSM")
+            build_cb = _make_thread_progress_cb()
             current_builder = await loop.run_in_executor(
                 None,
                 _compute_builder,
@@ -1467,6 +1516,7 @@ def create_server():
                 detector_axes,
                 ub_includes_2pi,
                 center_is_one_based,
+                build_cb,
             )
             _set_status("RSM map built. Ready to regrid.")
             _stop_progress(success=True)
@@ -1502,8 +1552,9 @@ def create_server():
             shape_label = ",".join("*" if d is None else str(d) for d in grid_shape)
             _set_status(f"Regridding to ({shape_label}) volume...")
             _start_progress("Regridding")
+            regrid_cb = _make_thread_progress_cb()
             volume, axes = await loop.run_in_executor(
-                None, _regrid_volume, current_builder, grid_shape
+                None, _regrid_volume, current_builder, grid_shape, regrid_cb
             )
             regrid_volume, regrid_axes = volume, axes
             state.scalar_range = (
@@ -2210,7 +2261,7 @@ def create_server():
         loop = asyncio.get_event_loop()
         try:
             _set_status(f"Exporting VTR to {output_path}...")
-            _start_progress("Exporting VTR")
+            _start_progress("Exporting VTR", indeterminate=True)
             await loop.run_in_executor(
                 None,
                 lambda: write_rsm_volume_to_vtr(
@@ -2243,7 +2294,7 @@ def create_server():
         loop = asyncio.get_event_loop()
         try:
             _set_status(f"Exporting grid TIFF to {output_path}...")
-            _start_progress("Exporting TIFF")
+            _start_progress("Exporting TIFF", indeterminate=True)
             await loop.run_in_executor(
                 None,
                 lambda: tifffile.imwrite(str(output_path), grid_data, compression="zlib"),
@@ -2272,7 +2323,7 @@ def create_server():
         loop = asyncio.get_event_loop()
         try:
             _set_status(f"Exporting grid+edges NPZ to {output_path}...")
-            _start_progress("Exporting NPZ")
+            _start_progress("Exporting NPZ", indeterminate=True)
             if space == "q":
                 await loop.run_in_executor(
                     None,
@@ -2602,6 +2653,16 @@ def create_server():
             "rgba(255,255,255,0.20) 50%, rgba(255,255,255,0.20) 75%, "
             "transparent 75%, transparent); background-size: 40px 40px; "
             "animation: progress-stripes 0.8s linear infinite; }"
+            # Indeterminate mode: a fixed-width fill that slides across the
+            # track, used for steps that can't report a real percentage
+            # (load/export). The !important width overrides the bound
+            # progress_value width, and transition:none stops it snapping.
+            "@keyframes progress-indeterminate { 0% { left: -40%; } "
+            "100% { left: 100%; } }"
+            ".progress-indeterminate { width: 40% !important; "
+            "animation: progress-indeterminate 1.1s ease-in-out infinite, "
+            "progress-stripes 0.8s linear infinite; "
+            "transition: none !important; }"
         )
         with html.Div(  # top header bar with the sidebar toggle and title
             style=(
@@ -2970,9 +3031,10 @@ def create_server():
             )
             with html.Div(style="flex:1; min-width:0; height:100%; background:#0f0f12; display:flex; flex-direction:column;"):
                 # Progress bar pinned to the top of the viewer. Shown only while
-                # a long-running step runs (load / build / regrid / export). The
-                # animated stripes + easing percentage convey ongoing work, and
-                # the centered label reports which step is active.
+                # a long-running step runs (load / build / regrid / export). For
+                # build/regrid the fill width is a real per-frame percentage;
+                # for load/export it slides as an indeterminate animation (no
+                # number, since those steps can't report accurate progress).
                 with html.Div(
                     v_show="progress_active",
                     style=(
@@ -2982,7 +3044,11 @@ def create_server():
                     ),
                 ):
                     html.Div(
-                        classes="progress-stripes",
+                        classes=(
+                            "progress_indeterminate ? "
+                            "'progress-stripes progress-indeterminate' "
+                            ": 'progress-stripes'",
+                        ),
                         style=(
                             "`position:absolute; top:0; left:0; bottom:0; "
                             "width:${progress_value}%; "
@@ -2991,7 +3057,8 @@ def create_server():
                         ),
                     )
                     html.Div(
-                        "{{ progress_label }} {{ Math.round(progress_value) }}%",
+                        "{{ progress_label }}{{ progress_indeterminate ? "
+                        "'\u2026' : ' ' + Math.round(progress_value) + '%' }}",
                         style=(
                             "position:absolute; inset:0; display:flex; "
                             "align-items:center; justify-content:center; "
