@@ -528,6 +528,14 @@ def create_server():
     # (name + eye toggle) in the panel. Rebuilt whenever the active view changes.
     state.setdefault("layers", [])
 
+    # Progress bar shown at the top of the viewer during long-running pipeline
+    # steps (load / build / regrid / export). ``progress_active`` toggles the
+    # bar's visibility, ``progress_value`` is the 0-100 percentage, and
+    # ``progress_label`` names the running step.
+    state.setdefault("progress_active", False)
+    state.setdefault("progress_value", 0.0)
+    state.setdefault("progress_label", "")
+
     renderer = vtkRenderer()
     renderer.SetBackground(0.10, 0.10, 0.12)
 
@@ -773,6 +781,11 @@ def create_server():
     current_task = None
     # In-flight frame-playback task (Play button); tracked so it can be cancelled.
     play_task = None
+    # Background tasks that drive the top-of-viewer progress bar: the ticker
+    # animates the percentage while a job runs, and the hide task clears the bar
+    # a moment after it reaches 100%.
+    progress_task = None
+    progress_hide_task = None
     # Defer VtkRemoteView creation until the UI context is built
     remote_view = None
     # how to instantiate remote_view: it needs the render_window, but that needs to be created after the trame server is running. So we create it here as None, and then assign it inside the DivLayout context manager where we have access to the server.
@@ -1296,6 +1309,71 @@ def create_server():
         return current_task
 
     # ---------------------------------------------------------------------
+    # Progress bar helpers
+    # ---------------------------------------------------------------------
+    async def _progress_ticker():
+        """Smoothly advance the progress bar while a background job runs.
+
+        The bundled loaders/builders don't emit granular progress, so the bar
+        eases asymptotically toward ~92% to convey that work is ongoing.
+        ``_stop_progress`` snaps it to 100% when the job actually finishes.
+        """
+        try:
+            while True:
+                await asyncio.sleep(0.15)
+                v = float(getattr(state, "progress_value", 0.0) or 0.0)
+                v += max(0.4, (92.0 - v) * 0.06)
+                with state:
+                    state.progress_value = round(min(v, 92.0), 1)
+        except asyncio.CancelledError:
+            pass
+
+    async def _hide_progress_later():
+        """Clear the finished progress bar after a brief 100% hold."""
+        try:
+            await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            return
+        with state:
+            state.progress_active = False
+            state.progress_value = 0.0
+
+    def _start_progress(label: str):
+        """Show the progress bar and start animating it for a new job."""
+        nonlocal progress_task, progress_hide_task
+        loop = asyncio.get_event_loop()
+        if progress_hide_task is not None:
+            progress_hide_task.cancel()
+            progress_hide_task = None
+        if progress_task is not None:
+            progress_task.cancel()
+        state.progress_active = True
+        state.progress_value = 0.0
+        state.progress_label = label
+        state.flush()
+        progress_task = loop.create_task(_progress_ticker())
+
+    def _stop_progress(success: bool = True):
+        """Finish the current job's progress bar.
+
+        On success the bar snaps to 100% and auto-hides shortly after; on
+        failure/cancellation it is hidden immediately.
+        """
+        nonlocal progress_task, progress_hide_task
+        loop = asyncio.get_event_loop()
+        if progress_task is not None:
+            progress_task.cancel()
+            progress_task = None
+        if success:
+            state.progress_value = 100.0
+            state.flush()
+            progress_hide_task = loop.create_task(_hide_progress_later())
+        else:
+            state.progress_active = False
+            state.progress_value = 0.0
+            state.flush()
+
+    # ---------------------------------------------------------------------
     # Pipeline actions
     # ---------------------------------------------------------------------
     async def _do_load_data():
@@ -1320,6 +1398,7 @@ def create_server():
         loop = asyncio.get_event_loop()
         try:
             _set_status("Loading experiment and TIFF frames...")
+            _start_progress("Loading data")
             setup, ub, df, frames = await loop.run_in_executor(
                 None, _load_experiment, loader_mode
             )
@@ -1340,10 +1419,13 @@ def create_server():
                 state.ub_matrix = _format_ub_matrix(ub)
             n = len(frames) if frames else 0
             _set_status(f"Data loaded ({n} frame(s)). Ready to build.")
+            _stop_progress(success=True)
         except asyncio.CancelledError:
             _set_status("Load cancelled.")
+            _stop_progress(success=False)
         except Exception as exc:
             _set_status(f"Load error: {exc}")
+            _stop_progress(success=False)
 
     @ctrl.set("load_data")
     def load_data(**kwargs):
@@ -1374,6 +1456,7 @@ def create_server():
         loop = asyncio.get_event_loop()
         try:
             _set_status("Computing Q/HKL mapping...")
+            _start_progress("Building RSM")
             current_builder = await loop.run_in_executor(
                 None,
                 _compute_builder,
@@ -1386,10 +1469,13 @@ def create_server():
                 center_is_one_based,
             )
             _set_status("RSM map built. Ready to regrid.")
+            _stop_progress(success=True)
         except asyncio.CancelledError:
             _set_status("Build cancelled.")
+            _stop_progress(success=False)
         except Exception as exc:
             _set_status(f"Build error: {exc}")
+            _stop_progress(success=False)
 
     @ctrl.set("build_rsm")
     def build_rsm(**kwargs):
@@ -1415,6 +1501,7 @@ def create_server():
         try:
             shape_label = ",".join("*" if d is None else str(d) for d in grid_shape)
             _set_status(f"Regridding to ({shape_label}) volume...")
+            _start_progress("Regridding")
             volume, axes = await loop.run_in_executor(
                 None, _regrid_volume, current_builder, grid_shape
             )
@@ -1426,10 +1513,13 @@ def create_server():
                 f"{volume.shape[0]} × {volume.shape[1]} × {volume.shape[2]}"
             )
             _set_status("Regrid complete. Use View RSM to display.")
+            _stop_progress(success=True)
         except asyncio.CancelledError:
             _set_status("Regrid cancelled.")
+            _stop_progress(success=False)
         except Exception as exc:
             _set_status(f"Regrid error: {exc}")
+            _stop_progress(success=False)
 
     @ctrl.set("regrid")
     def regrid(**kwargs):
@@ -2120,6 +2210,7 @@ def create_server():
         loop = asyncio.get_event_loop()
         try:
             _set_status(f"Exporting VTR to {output_path}...")
+            _start_progress("Exporting VTR")
             await loop.run_in_executor(
                 None,
                 lambda: write_rsm_volume_to_vtr(
@@ -2128,8 +2219,10 @@ def create_server():
             )
             state.export_path = str(output_path)
             _set_status(f"Exported VTR to {output_path}")
+            _stop_progress(success=True)
         except Exception as exc:
             _set_status(f"Export failed: {exc}")
+            _stop_progress(success=False)
 
     @ctrl.set("export_tiff")
     async def export_tiff(**kwargs):
@@ -2150,14 +2243,17 @@ def create_server():
         loop = asyncio.get_event_loop()
         try:
             _set_status(f"Exporting grid TIFF to {output_path}...")
+            _start_progress("Exporting TIFF")
             await loop.run_in_executor(
                 None,
                 lambda: tifffile.imwrite(str(output_path), grid_data, compression="zlib"),
             )
             state.export_tiff_path = str(output_path)
             _set_status(f"Exported grid TIFF to {output_path}")
+            _stop_progress(success=True)
         except Exception as exc:
             _set_status(f"Export grid failed: {exc}")
+            _stop_progress(success=False)
 
     @ctrl.set("export_npz")
     async def export_npz(**kwargs):
@@ -2176,6 +2272,7 @@ def create_server():
         loop = asyncio.get_event_loop()
         try:
             _set_status(f"Exporting grid+edges NPZ to {output_path}...")
+            _start_progress("Exporting NPZ")
             if space == "q":
                 await loop.run_in_executor(
                     None,
@@ -2194,8 +2291,10 @@ def create_server():
                 label = "H, K, L"
             state.export_npz_path = str(output_path)
             _set_status(f"Exported grid+edges ({label}) to {output_path}")
+            _stop_progress(success=True)
         except Exception as exc:
             _set_status(f"Export failed: {exc}")
+            _stop_progress(success=False)
 
     @ctrl.set("refresh_rendering")
     def refresh_rendering(**kwargs):
@@ -2494,6 +2593,15 @@ def create_server():
             "<path d='M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19'/>"
             "<path d='M14.12 14.12a3 3 0 1 1-4.24-4.24'/>"
             "<line x1='1' y1='1' x2='23' y2='23'/></svg>\"); }"
+            # Animated barber-pole stripes for the top-of-viewer progress bar so
+            # the fill visibly \"moves\" while a job runs.
+            "@keyframes progress-stripes { from { background-position: 0 0; } "
+            "to { background-position: 40px 0; } }"
+            ".progress-stripes { background-image: linear-gradient(45deg, "
+            "rgba(255,255,255,0.20) 25%, transparent 25%, transparent 50%, "
+            "rgba(255,255,255,0.20) 50%, rgba(255,255,255,0.20) 75%, "
+            "transparent 75%, transparent); background-size: 40px 40px; "
+            "animation: progress-stripes 0.8s linear infinite; }"
         )
         with html.Div(  # top header bar with the sidebar toggle and title
             style=(
@@ -2861,6 +2969,37 @@ def create_server():
                 ),
             )
             with html.Div(style="flex:1; min-width:0; height:100%; background:#0f0f12; display:flex; flex-direction:column;"):
+                # Progress bar pinned to the top of the viewer. Shown only while
+                # a long-running step runs (load / build / regrid / export). The
+                # animated stripes + easing percentage convey ongoing work, and
+                # the centered label reports which step is active.
+                with html.Div(
+                    v_show="progress_active",
+                    style=(
+                        "flex:0 0 auto; position:relative; height:24px; "
+                        "background:#16161a; border-bottom:1px solid #2a2a2e; "
+                        "overflow:hidden;"
+                    ),
+                ):
+                    html.Div(
+                        classes="progress-stripes",
+                        style=(
+                            "`position:absolute; top:0; left:0; bottom:0; "
+                            "width:${progress_value}%; "
+                            "background-color:#3a7bff; "
+                            "transition:width 0.2s linear;`",
+                        ),
+                    )
+                    html.Div(
+                        "{{ progress_label }} {{ Math.round(progress_value) }}%",
+                        style=(
+                            "position:absolute; inset:0; display:flex; "
+                            "align-items:center; justify-content:center; "
+                            "font-size:0.78rem; color:#f0f0f0; pointer-events:none; "
+                            "font-family:sans-serif; "
+                            "text-shadow:0 1px 2px rgba(0,0,0,0.6);"
+                        ),
+                    )
                 # Instantiate the remote view that streams the off-screen VTK
                 # render window to the browser. This reassigns the `remote_view`
                 # closure variable that _update_rendering()/_set_volume_data()
