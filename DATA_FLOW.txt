@@ -24,11 +24,18 @@ Both apps implement the SAME logical pipeline, made of three stages:
    STAGE 1  LOAD     raw input files            ->  (setup, UB, df)
    STAGE 2  BUILD    (setup, UB, df)            ->  dense 3D volume + axes
    STAGE 3  RENDER   dense 3D volume + axes     ->  pixels on a screen
+            ANALYZE  dense 3D volume + axes     ->  ortho/cyl/sph slices
             EXPORT   dense 3D volume + axes     ->  .vtr file on disk
 
 STAGES 1 and 2 are IDENTICAL in both apps — they call the exact same code in
-the napari_resview package. The apps only DIVERGE at STAGE 3 (rendering), and
-they SHARE the export path again.
+the napari_resview package. The apps only DIVERGE at STAGE 3 (rendering /
+analysis), and they SHARE the export path again.
+
+NOTE ON GRANULARITY: the napari app and the web app both expose these stages as
+DISCRETE, separately-triggered steps. In the web app each step is its own button
+and its own trame controller (load_data, view_intensity, crop_from_roi,
+build_rsm, regrid, view_rsm, refresh_rendering, update_slices, export_vtr), so a
+user can run and inspect each step independently rather than in one shot.
 
        INPUT FILES                         napari_resview package
    ┌──────────────────┐              ┌──────────────────────────────┐
@@ -143,6 +150,7 @@ web_app.py   (single file; trame server + VTK rendering + UI)
   module-level helpers (pure, reused by the render step):
     - _apply_color_transfer_function(color_tf, colormap, value_range)
     - _apply_opacity_function(opacity_tf, value_range, opacity_scale)
+    - _make_lookup_table(colormap, value_range)   vtkLookupTable for slices
     - _crop_window_from_state / _crop_dataframe_intensity /
       _adjust_setup_for_crop          (mirror of napari crop logic)
     - _float / _ensure_path           (state coercion helpers)
@@ -153,17 +161,49 @@ web_app.py   (single file; trame server + VTK rendering + UI)
     - VTK objects built ONCE:
         vtkRenderer, vtkRenderWindow (OffScreenRendering),
         vtkSmartVolumeMapper, vtkColorTransferFunction,
-        vtkPiecewiseFunction, vtkVolumeProperty, vtkVolume
+        vtkPiecewiseFunction, vtkVolumeProperty, vtkVolume,
+        per-axis vtkImageResliceMapper + vtkImageSlice (ortho slices),
+        vtkActor x2 (cylinder + sphere probe surfaces) — all start hidden
     - remote_view (trame.widgets.vtk.VtkRemoteView)  bridges window -> browser
+    - closure state: current_setup/current_ub/current_df/current_frames,
+        current_builder, regrid_volume/regrid_axes, current_image,
+        current_task (the cancellable asyncio task)
+
+    rendering + slicing helpers:
     - _set_status(msg)                 append to status_log, flush live
     - _update_rendering()              rebuild transfer funcs + render + stream
-    - _set_volume_data(volume, axes)   wrap numpy volume in vtkImageData
-    - _load_experiment / _compute_builder / _regrid_volume
-                                       thin wrappers that call the SAME
-                                       loaders + RSMBuilder, run in a thread
-    - @ctrl.set("build_rsm")  async    STAGE 1+2 orchestration (live status)
-    - @ctrl.set("export_vtr") async    EXPORT -> write_rsm_volume_to_vtr
-    - DivLayout / trame.widgets.html   the browser UI (sidebar + 3D panel)
+                                       (rendering mode from state.rendering)
+    - _set_volume_data(volume, axes)   wrap numpy volume in vtkImageData; honors
+                                       state.log_view + contrast_lo/contrast_hi
+                                       percentiles; refreshes slices
+    - _axis_bounds / _update_ortho_slice(axis) / _probe_surface /
+      _update_cylinder / _update_sphere / _update_all_slices
+                                       Analysis-tab slicing (guarded by try/except)
+
+    data + pipeline helpers (run the SAME backend, off the event loop):
+    - _load_experiment(loader_mode)    RSMDataLoader_ISR/CMS.load() (data_io.py)
+    - _populate_setup_fields / _apply_setup_overrides
+                                       sync the editable Experimental Setup fields
+    - _compute_builder                 RSMBuilder(...).compute_full() (rsm3d.py)
+    - _regrid_volume                   RSMBuilder.regrid_xu()         (rsm3d.py)
+    - _track(coro)                     wrap a coroutine in a cancellable task
+
+    per-step controllers (one button each):
+    - @ctrl.set("load_data")      STAGE 1 only (no rendering)
+    - @ctrl.set("view_intensity") show raw frame stack as a volume
+    - @ctrl.set("crop_from_roi")  re-crop df/setup, invalidate downstream
+    - @ctrl.set("build_rsm")      STAGE 2a -> compute_full
+    - @ctrl.set("regrid")         STAGE 2b -> regrid_xu
+    - @ctrl.set("view_rsm")       STAGE 3  -> _set_volume_data
+    - @ctrl.set("refresh_rendering")  re-apply view settings + slices
+    - @ctrl.set("update_slices") refresh ortho/cyl/sph slices
+    - @ctrl.set("stop_task")     cancel current_task
+    - @ctrl.set("export_vtr") async   EXPORT -> write_rsm_volume_to_vtr
+    - @state.change("exp_energy"/"exp_wavelength")  keep E <-> lambda in sync
+
+    - DivLayout / trame.widgets.html   the browser UI: a 4-tab accordion
+                                       (Data / Build / View / Analysis) over a
+                                       persistent status + volume-info panel
     - file-browser dialog (_fb_*)      server-side file picker
 
   run_server(): create_server().start(...)
@@ -229,25 +269,39 @@ Python server runs VTK headless and streams frames to the browser.
      vtkVolumeProperty + vtkVolume. The volume actor starts hidden.
    - A VtkRemoteView is the bridge that ships rendered frames to the browser.
 
- STEP W1  USER PICKS FILES
+ STEP W1  USER PICKS FILES  (Data tab)
    A SERVER-SIDE file-browser dialog (_fb_open/_fb_refresh/_fb_click, the
    `fb_*` state) lists directories on the server and writes the chosen path
    into state.setup_path / state.tiff_dir / state.spec_path. Each selection
    pushes a live status line via _set_status. (No OS file dialog; the server's
-   filesystem is browsed through the web UI.)
+   filesystem is browsed through the web UI.) CMS mode also exposes an angle
+   step; ISR mode also exposes the SPEC file.
 
- STEP W2  LOAD + BUILD + REGRID  (@ctrl.set("build_rsm"), async)
-   Triggered by the "Load and build RSM" button (click="build_rsm").
-   - Validates the chosen paths; on error, _set_status reports it.
-   - Runs the heavy work in a thread executor (loop.run_in_executor) so the
-     trame event loop stays free to stream LIVE status updates:
-       _load_experiment(...)   -> RSMDataLoader_ISR/CMS.load()  (data_io.py)
-       _compute_builder(...)   -> RSMBuilder(...).compute_full() (rsm3d.py)
-       _regrid_volume(...)     -> RSMBuilder.regrid_xu()         (rsm3d.py)
-   - Each step calls _set_status("Loading...", "Computing...", "Regridding...")
-     and state.flush() so the browser Status box updates as it goes.
+ STEP W2  LOAD  (@ctrl.set("load_data"))  (Data tab)
+   Triggered by the "Load Data" button (click=ctrl.load_data). Wraps the work in
+   a cancellable task via _track(...):
+     _load_experiment(loader_mode) -> RSMDataLoader_ISR/CMS.load() (data_io.py)
+   Stores (setup, UB, df) + the raw frame list in closure state and fills the
+   editable Experimental Setup fields via _populate_setup_fields. NO rendering
+   happens here. Optional sibling actions on the Data tab:
+     - "View Intensity" (@ctrl.set("view_intensity")): stack the raw frames into
+       a volume and render them directly (no RSM needed).
+     - "Crop from ROI" (@ctrl.set("crop_from_roi")): re-crop df/setup from the
+       row/col bounds, then invalidate the cached builder/regrid products.
 
- STEP W3  PUSH VOLUME INTO VTK  (_set_volume_data)
+ STEP W3  BUILD + REGRID  (Build tab)
+   - "Build RSM" (@ctrl.set("build_rsm")): _apply_setup_overrides(setup) then,
+     off the event loop, _compute_builder(...) -> RSMBuilder.compute_full().
+   - "Regrid" (@ctrl.set("regrid")): off the event loop, _regrid_volume(...) ->
+     RSMBuilder.regrid_xu(); stores regrid_volume/regrid_axes and updates the
+     scalar_range / volume_dims info fields.
+   Both run inside _track(...) tasks and call _set_status(...) + state.flush()
+   between steps so the browser Status box updates live (and "Stop" can cancel).
+
+ STEP W4  PUSH VOLUME INTO VTK  (_set_volume_data, via "View RSM")
+   Triggered by "View RSM" (@ctrl.set("view_rsm")).
+   - Apply state.log_view (log1p vs clamp) and the contrast_lo/contrast_hi
+     percentiles to the regridded volume.
    - Wrap the numpy `volume` in a vtkImageData:
        SetDimensions(nx,ny,nz);
        SetSpacing(axis[1]-axis[0] per axis);  SetOrigin(axis[0] per axis);
@@ -259,19 +313,30 @@ Python server runs VTK headless and streams frames to the browser.
    - Build appearance by hand:
        _apply_color_transfer_function(color_tf, colormap, scalar_range)
        _apply_opacity_function(opacity_tf, scalar_range, opacity_scale)
-       set shade/ambient/diffuse/specular + blend mode.
+       set shade/ambient/diffuse/specular + rendering mode (state.rendering:
+       composite / maximum-intensity / attenuated MIP).
    - render_window.Render()  (off-screen, server GPU/CPU)
    - remote_view.update()    ship the new frame to the browser.
    - scalar_range / volume_dims state fields update the info panel.
+   View-tab "Refresh" (@ctrl.set("refresh_rendering")) re-applies log/contrast/
+   colormap/rendering and slices without rebuilding the RSM.
 
- STEP W5  EXPORT  (@ctrl.set("export_vtr"), async)
+ STEP W5  ANALYSIS SLICING  (@ctrl.set("update_slices"))  (Analysis tab)
+   Orthogonal X/Y/Z planes via vtkImageResliceMapper + vtkImageSlice; cylindrical
+   and spherical surfaces via vtkCylinderSource/vtkSphereSource sampled with
+   vtkProbeFilter and colored through a vtkLookupTable. Each slice has its own
+   show toggle, position/radius, opacity, and colormap. _update_all_slices()
+   wraps these in try/except so a slice failure never crashes the render.
+
+ STEP W6  EXPORT  (@ctrl.set("export_vtr"), async)
    -> write_rsm_volume_to_vtr(current_volume, current_axes, path) (data_io.py)
    -> .vtr written on the SERVER; status reported live.
 
  Threading model note: the web app MUST offload STAGE 1+2 to a thread executor
  and flush state between steps; otherwise the single async event loop would
- block and the browser would see no progress until the very end. The napari app
- instead uses Qt thread_workers for the same reason.
+ block and the browser would see no progress until the very end. Each heavy step
+ runs in a cancellable asyncio task (_track), so the "Stop" button can request
+ cancellation. The napari app instead uses Qt thread_workers for the same reason.
 
 
 ===============================================================================
@@ -303,14 +368,18 @@ Python server runs VTK headless and streams frames to the browser.
    web app: builds vtkImageData + vtkSmartVolumeMapper + explicit color/opacity
             transfer functions, renders OFF-SCREEN on the server, and streams
             the result to the browser via VtkRemoteView. Appearance controls
-            (colormap, opacity, blend, shading) are built by hand because there
-            is no high-level "add_image".
+            (colormap, log/contrast, rendering mode, shading) are built by hand
+            because there is no high-level "add_image". Analysis-tab slicing
+            (ortho planes + cylinder/sphere probes) is likewise built directly
+            from VTK filters in web_app.py.
 
  ORCHESTRATION / UI also diverge:
-   napari:  magicgui dock widget + Qt buttons + napari thread_workers +
-            persistent YAML profiles (ISR/CMS) in resview_widget.py.
-   web app: trame reactive `state` + controller methods + html widgets +
-            asyncio executor + a server-side file browser, all in web_app.py.
+   napari:  magicgui dock widget + QTabWidget tabs + Qt buttons + napari
+            thread_workers + persistent YAML profiles (ISR/CMS) in
+            resview_widget.py.
+   web app: trame reactive `state` + per-step controller methods + html widgets
+            in a 4-tab accordion (Data/Build/View/Analysis) + cancellable
+            asyncio tasks + a server-side file browser, all in web_app.py.
 
 
 ===============================================================================
@@ -371,8 +440,8 @@ Python server runs VTK headless and streams frames to the browser.
  8. STAGE-3 WIRING NOTES (web app)
 ===============================================================================
 
- Two pieces of wiring are required for the "Load and build RSM" button to show
- a result; both are now in place in create_server():
+ Two pieces of wiring are required for the per-step buttons to show a result;
+ both are in place in create_server():
 
  (1) The 3D surface. `remote_view` starts as None and is instantiated inside the
      right-hand panel of the UI layout as:
@@ -380,21 +449,27 @@ Python server runs VTK headless and streams frames to the browser.
      Because _update_rendering() and _set_volume_data() read `remote_view`
      through the closure, reassigning it in the layout gives every later
      remote_view.update() a live surface that streams each rendered frame to the
-     browser. (A None-guard in _update_rendering() avoids a crash if a render is
-     ever triggered before the layout is built.)
+     browser. (A None-guard avoids a crash if a render is ever triggered before
+     the layout is built.)
 
- (2) The button trigger. The buttons must reference the CONTROLLER methods, not
-     a string:
-           html.Button("Load and build RSM", click=ctrl.build_rsm)
-           html.Button("Export VTR",        click=ctrl.export_vtr)
-     A string like click="build_rsm" is evaluated as a client-side JS
-     expression (there is no Vue method by that name), so the click silently
-     does nothing. Passing ctrl.build_rsm makes trame register the trigger that
-     invokes the async Python handler.
+ (2) The button triggers. Each button references its CONTROLLER method, not a
+     string, e.g.:
+           html.Button("Load Data",  click=ctrl.load_data)
+           html.Button("Build RSM",  click=ctrl.build_rsm)
+           html.Button("Regrid",     click=ctrl.regrid)
+           html.Button("View RSM",   click=ctrl.view_rsm)
+     A string like click="build_rsm" is evaluated as a client-side JS expression
+     (there is no Vue method by that name), so the click silently does nothing.
+     Passing ctrl.<name> makes trame register the trigger that invokes the
+     Python handler. (The accordion headers, by contrast, DO use JS expression
+     strings such as click="open_tab = open_tab === 'data' ? '' : 'data'" to
+     toggle which tab is open purely on the client.)
 
  With both in place the STAGE-3 web path is:
        VtkRemoteView(render_window)  ->  placed in the right-hand panel  ->
-       build_rsm -> _set_volume_data -> _update_rendering ->
-       remote_view.update() streams each rendered frame to the browser.
+       load_data -> build_rsm -> regrid -> view_rsm -> _set_volume_data ->
+       _update_rendering -> remote_view.update() streams each rendered frame to
+       the browser. (refresh_rendering and update_slices re-stream after a
+       View/Analysis-tab change without rebuilding the RSM.)
 
 ===============================================================================

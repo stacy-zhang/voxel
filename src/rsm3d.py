@@ -13,6 +13,36 @@ except ImportError:
 _TWO_PI = 2.0 * np.pi
 
 
+# =============================================================================
+# STAGE 2 OF THE RSM PIPELINE: turn loaded frames into a 3D reciprocal-space map
+# =============================================================================
+# RSMBuilder takes the (setup, UB, df) triple produced by the loaders in
+# data_io.py and performs the physics + binning:
+#
+#   compute_full():
+#       For each detector frame, the goniometer angles + detector geometry are
+#       fed to an xrayutilities QConversion, which maps EVERY pixel to a
+#       reciprocal-space vector Q (Å⁻¹). Multiplying by the UB matrix gives the
+#       crystallographic indices HKL. The result is a SCATTERED point cloud:
+#       millions of (Qx,Qy,Qz) or (H,K,L) points, each carrying an intensity.
+#
+#   regrid_xu():
+#       Re-bins that irregular point cloud onto a REGULAR 3D grid using
+#       xrayutilities' Gridder3D, returning a dense (nx,ny,nz) volume plus the
+#       1D bin-center axes. This dense volume is the object that gets rendered.
+#
+# This class is front-end agnostic. Both the napari plugin (data_viz.py) and the
+# trame/VTK web app (web_app.py) instantiate RSMBuilder and call these two
+# methods exactly the same way. The only difference is what they DO with the
+# returned volume + axes:
+#   * napari   -> viewer.add_image(volume, scale=<axis spacing>, translate=...)
+#   * trame+VTK-> wrap volume in vtkImageData(spacing/origin from axes), attach
+#                 a vtkSmartVolumeMapper, render off-screen, stream to browser.
+# In web_app.py the heavy compute_full()/regrid_xu() calls run inside a thread
+# executor so the trame event loop can keep streaming live status updates.
+# =============================================================================
+
+
 class RSMBuilder:
     """
     Build reciprocal-space maps from loaded experimental data.
@@ -371,9 +401,19 @@ class RSMBuilder:
     # ───────────────────────────────────────────────────────────────────────────
     # Core mapping
     # ───────────────────────────────────────────────────────────────────────────
-    def compute_full(self, verbose: bool = True):
+    def compute_full(self, verbose: bool = True, progress_callback=None):
         """
         Compute per-pixel Q (Å⁻¹) and HKL for each frame using xrayutilities.
+
+        Parameters
+        ----------
+        verbose
+            Print a per-frame counter to stdout.
+        progress_callback
+            Optional callable ``cb(done, total)`` invoked once per frame with
+            the number of frames processed so far and the total frame count.
+            Used by the web app to drive an accurate progress bar; ignored when
+            None (the napari path).
 
         Returns
         -------
@@ -419,6 +459,10 @@ class RSMBuilder:
             else:
                 angs = (omega, chi, phi)
             # print("angles:", angs)
+            # qconv.area(...) is the core forward model: given this frame's
+            # angles, it returns the Q-vector for EVERY detector pixel at once
+            # (arrays shaped like the image). This is where pixels become
+            # reciprocal-space coordinates.
             # Q in Å^-1
             qx, qy, qz = self.qconv.area(
                 *angs, wl=self.qconv.wavelength, deg=True
@@ -450,6 +494,8 @@ class RSMBuilder:
 
             if verbose and (idx % 10 == 0 or idx == Nf - 1):
                 print(f"Processed {idx+1}/{Nf} frames", end="\r")
+            if progress_callback is not None:
+                progress_callback(idx + 1, Nf)
 
         self.Q_samp = Q_samp
         self.hkl = HKL
@@ -474,6 +520,7 @@ class RSMBuilder:
         width: float | None = None,
         normalize: str = "mean",  # "mean", "sum", or None
         stream: bool = False,
+        progress_callback=None,
     ):
         """
         Scatter‐to‐grid re‐binning using xrayutilities Gridder3D (or FuzzyGridder3D).
@@ -569,6 +616,8 @@ class RSMBuilder:
                     G(Xi, Yi, Zi, Wi, width=width)
                 else:
                     G(Xi, Yi, Zi, Wi)
+                if progress_callback is not None:
+                    progress_callback(i + 1, self.intensity.shape[0])
         else:
             # all‐points at once
             X = arr[..., 0].ravel()
@@ -585,6 +634,10 @@ class RSMBuilder:
         G.Normalize(do_norm)
 
         # extract results
+        # `grid` is the dense 3D RSM volume; (xax, yax, zax) are the bin-center
+        # coordinates along each axis. Consumers turn these axes into render
+        # geometry: napari uses them as layer scale/translate, while web_app.py
+        # derives vtkImageData spacing (axis[1]-axis[0]) and origin (axis[0]).
         grid = G.data.astype(self.dtype, copy=False)
         xax, yax, zax = G.xaxis, G.yaxis, G.zaxis
         return grid, (xax, yax, zax)

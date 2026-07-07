@@ -30,41 +30,49 @@ from vtkmodules.vtkCommonDataModel import (
     vtkPiecewiseFunction, # for defining the opacity transfer function (mapping scalar values to opacity)
 )
 
-from vtkmodules.vtkFiltersModeling import vtkOutlineFilter
-from vtkmodules.vtkIOImage import vtkTIFFReader
+from vtkmodules.vtkFiltersModeling import vtkOutlineFilter # to create a wireframe box around the volume
+from vtkmodules.vtkIOImage import vtkTIFFReader # to read 3D TIFF files as vtkImageData
 from vtkmodules.vtkRenderingCore import (
-    vtkActor,
-    vtkColorTransferFunction,
-    vtkPolyDataMapper,
-    vtkRenderer,
-    vtkRenderWindow,
-    vtkRenderWindowInteractor,
-    vtkVolume,
-    vtkVolumeProperty,
+    vtkActor, # for rendering the outline box
+    vtkColorTransferFunction, # for defining the color transfer function (mapping scalar values to colors)
+    vtkPolyDataMapper, # to map the outline geometry to graphics primitives
+    vtkRenderer, # the main rendering engine that manages the scene
+    vtkRenderWindow, # the window that displays the rendered scene
+    vtkRenderWindowInteractor, # handles user interaction (mouse, keyboard) with the render window
+    vtkVolume, # the actor type for volume rendering
+    vtkVolumeProperty, # holds the properties of the volume rendering (color, opacity, shading, etc.)
 )
-from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
+from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper # the GPU-accelerated volume mapper that does the actual rendering of the 3D data
 
-from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
+from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera # allows the user to rotate/zoom/pan the view with mouse interactions (trackball style)
 import vtkmodules.vtkInteractionStyle  # noqa – required
 import vtkmodules.vtkRenderingOpenGL2  # noqa – required
+# the above two imports are needed to ensure the appropriate VTK rendering and interaction styles are registered, even if we don't directly reference them in the code
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+# this text appears when you run `pixi run python my_tests/tomo_viewer.py --help`
 parser = argparse.ArgumentParser(description="Trame TIFF Volume Viewer")
 parser.add_argument("--data", type=str, default="", help="Path to a 3-D TIFF file")
 parser.add_argument("--port", type=int, default=0, help="Server port (0 = auto)")
 args, _unknown = parser.parse_known_args()
+# Trame TIFF Volume Viewer
+#
+# options:
+#   -h, --help   show this help message and exit
+#   --data DATA  Path to a 3-D TIFF file
+#   --port PORT  Server port (0 = auto)
 
 # ---------------------------------------------------------------------------
 # VTK pipeline
 # ---------------------------------------------------------------------------
 renderer = vtkRenderer()
-renderer.SetBackground(0.15, 0.15, 0.15)
+renderer.SetBackground(0.15, 0.15, 0.15) # dark gray background
 
 render_window = vtkRenderWindow()
 render_window.AddRenderer(renderer)
-render_window.SetSize(1024, 768)
+render_window.SetSize(1024, 768) # initial window size (can be resized by user)
 render_window.SetOffScreenRendering(1)
 
 interactor = vtkRenderWindowInteractor()
@@ -73,26 +81,26 @@ interactor.SetInteractorStyle(vtkInteractorStyleTrackballCamera())
 interactor.EnableRenderOff()
 
 volume_mapper = vtkSmartVolumeMapper()
-volume_mapper.SetBlendModeToComposite()
+volume_mapper.SetBlendModeToComposite() # default blend mode (user can change to max/min/avg intensity)
 
 color_tf = vtkColorTransferFunction()
 opacity_tf = vtkPiecewiseFunction()
 
 vol_property = vtkVolumeProperty()
 vol_property.SetIndependentComponents(True)
-vol_property.SetInterpolationTypeToLinear()
+vol_property.SetInterpolationTypeToLinear() # smooth interpolation between voxels for better quality (can be set to nearest for sharper but blockier look)
 vol_property.SetColor(color_tf)
 vol_property.SetScalarOpacity(opacity_tf)
-vol_property.ShadeOn()
+vol_property.ShadeOn() # enable lighting by default for better depth perception, user can toggle off if desired
 vol_property.SetAmbient(0.2)
 vol_property.SetDiffuse(0.7)
 vol_property.SetSpecular(0.3)
-vol_property.SetSpecularPower(10.0)
+vol_property.SetSpecularPower(10.0) # shininess of the specular highlight (higher = smaller, sharper highlight)
 
 volume_actor = vtkVolume()
 volume_actor.SetMapper(volume_mapper)
 volume_actor.SetProperty(vol_property)
-volume_actor.VisibilityOff()
+volume_actor.VisibilityOff() # start with volume hidden until a file is loaded
 renderer.AddVolume(volume_actor)
 
 # Clipping planes for axis-aligned slicing (6 planes: +X, -X, +Y, -Y, +Z, -Z)
@@ -112,12 +120,12 @@ outline_mapper = vtkPolyDataMapper()
 outline_mapper.SetInputConnection(outline_filter.GetOutputPort())
 outline_actor = vtkActor()
 outline_actor.SetMapper(outline_mapper)
-outline_actor.GetProperty().SetColor(1.0, 1.0, 1.0)
+outline_actor.GetProperty().SetColor(1.0, 1.0, 1.0) # white outline
 outline_actor.GetProperty().SetLineWidth(1.5)
-outline_actor.VisibilityOff()
+outline_actor.VisibilityOff() # start with outline hidden until a file is loaded
 renderer.AddActor(outline_actor)
 
-renderer.ResetCamera()
+renderer.ResetCamera() # automatically position the camera to fit the scene (will be updated when a file is loaded)
 
 # ---------------------------------------------------------------------------
 # Colormap presets – sampled from matplotlib (ParaView-like set)
@@ -144,10 +152,11 @@ def _cmap_available(name: str) -> bool:
 
 MPL_CMAP_NAMES = [n for n in _MPL_CMAP_NAMES if _cmap_available(n)]
 if not MPL_CMAP_NAMES:
-    MPL_CMAP_NAMES = ["viridis"]
+    MPL_CMAP_NAMES = ["viridis"] # fallback to viridis if none of the preferred colormaps are available
 
 _N_CMAP_SAMPLES = 64  # number of RGB samples per colormap
-
+# an RGB sample is a tuple of (fraction, r, g, b) where fraction is in [0,1] and r,g,b are in [0,1]
+# fraction is the position along the colormap gradient (0 = start, 1 = end), and r,g,b are the corresponding color values at that position
 
 def _sample_mpl_colormap(name: str, n: int = _N_CMAP_SAMPLES) -> list[tuple[float, float, float, float]]:
     """Return [(frac, r, g, b), ...] sampled from a matplotlib colormap."""
