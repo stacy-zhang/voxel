@@ -716,6 +716,11 @@ def create_server():
     world_axes_cone_sources = []
     world_axes_actors = []
     world_axes_labels = []
+    # Root position + visibility of the world-axes gizmo, shared between
+    # _update_world_axes (sets it when the volume changes) and
+    # _rescale_world_axes (re-sizes it every render so it stays a constant
+    # on-screen size regardless of zoom). Target shaft length is in pixels.
+    world_axes_geom = {"origin": None, "visible": False, "target_px": 90.0}
     for _i in range(3):
         _col = _world_axis_colors[_i]
         _ls = vtkLineSource()
@@ -1251,15 +1256,21 @@ def create_server():
 
         Mirrors napari's "World axes" overlay. The arrows are rooted at the
         origin ``(0, 0, 0)`` -- clamped into the data bounds so the gizmo stays
-        on-screen if the origin lies outside the regridded volume -- and each is
-        drawn 10% of the largest axis extent long, pointing toward increasing
-        Qx (magenta), Qy (green) and Qz (cyan). This is a visual orientation
-        cue only; it does not alter the coordinate values shown elsewhere.
-        Labels switch to +H/+K/+L in crystallographic space to match the
-        outline-box corner labels.
+        on-screen if the origin lies outside the regridded volume -- and point
+        toward increasing Qx (magenta), Qy (green) and Qz (cyan). This is a
+        visual orientation cue only; it does not alter the coordinate values
+        shown elsewhere. Labels switch to +H/+K/+L in crystallographic space to
+        match the outline-box corner labels.
+
+        This routine only fixes the arrows' *origin*, colors, labels and
+        visibility. The actual on-screen length is set by
+        ``_rescale_world_axes`` (called here and again on every render) so the
+        arrows keep a constant pixel size no matter how far the volume is
+        zoomed in or out.
         """
         show = bool(getattr(state, "world_axes_show", True))
         if current_image is None or current_axes is None or not show:
+            world_axes_geom["visible"] = False
             for actor in world_axes_actors:
                 actor.VisibilityOff()
             for label in world_axes_labels:
@@ -1269,10 +1280,6 @@ def create_server():
         ax_x = np.asarray(current_axes[0], dtype=float)
         ax_y = np.asarray(current_axes[1], dtype=float)
         ax_z = np.asarray(current_axes[2], dtype=float)
-        lx = float(ax_x[-1]) - float(ax_x[0])
-        ly = float(ax_y[-1]) - float(ax_y[0])
-        lz = float(ax_z[-1]) - float(ax_z[0])
-        length = 0.10 * (max(abs(lx), abs(ly), abs(lz)) or 1.0)
 
         # Root the arrows at the reciprocal-space origin (0, 0, 0). If the
         # origin falls outside the regridded extents, clamp each component into
@@ -1286,15 +1293,75 @@ def create_server():
         ox = _clamp(0.0, ax_x)
         oy = _clamp(0.0, ax_y)
         oz = _clamp(0.0, ax_z)
+        world_axes_geom["origin"] = (ox, oy, oz)
+        world_axes_geom["visible"] = True
 
         is_q = (_ensure_path(getattr(state, "space", "q")) or "q").lower() == "q"
         names = ("+Qx", "+Qy", "+Qz") if is_q else ("+H", "+K", "+L")
+        for i in range(3):
+            world_axes_labels[i].SetInput(names[i])
+            world_axes_labels[i].VisibilityOn()
+        for actor in world_axes_actors:
+            actor.VisibilityOn()
+
+        # Size the arrows for the current camera so they appear immediately at
+        # the right on-screen scale (the render observer keeps them there).
+        _rescale_world_axes()
+
+    def _rescale_world_axes(*_):
+        """Resize the world-axes arrows to a constant on-screen (pixel) length.
+
+        Registered as a renderer ``StartEvent`` observer so it runs before
+        every render with the current camera. It converts a target pixel length
+        into world units at the gizmo's origin -- using the parallel scale for
+        an orthographic camera, or the perspective view angle and camera
+        distance otherwise -- and applies it to the line shafts, cone
+        arrowheads and tip labels. Because the world length is recomputed each
+        frame, the arrows stay the same size on screen at any zoom level.
+        """
+        if not world_axes_geom.get("visible"):
+            return
+        origin = world_axes_geom.get("origin")
+        if origin is None:
+            return
+        ox, oy, oz = origin
+
+        size = render_window.GetSize()
+        win_h = int(size[1]) if size and len(size) > 1 else 0
+        if win_h <= 0:
+            return
+        cam = renderer.GetActiveCamera()
+        if cam is None:
+            return
+
+        if cam.GetParallelProjection():
+            # Parallel scale is half the viewport height in world units.
+            world_per_px = (2.0 * float(cam.GetParallelScale())) / win_h
+        else:
+            cpos = np.asarray(cam.GetPosition(), dtype=float)
+            fpos = np.asarray(cam.GetFocalPoint(), dtype=float)
+            view_dir = fpos - cpos
+            norm = float(np.linalg.norm(view_dir))
+            if norm == 0.0:
+                return
+            view_dir /= norm
+            # Distance from the camera to the gizmo origin along the view axis.
+            dist = abs(float(np.dot(np.array([ox, oy, oz]) - cpos, view_dir)))
+            if dist <= 0.0:
+                dist = 1e-6
+            view_angle = np.deg2rad(float(cam.GetViewAngle()))
+            world_per_px = (2.0 * dist * np.tan(view_angle / 2.0)) / win_h
+
+        length = float(world_axes_geom.get("target_px", 90.0)) * world_per_px
+        if not np.isfinite(length) or length <= 0.0:
+            return
+
+        dirs = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
         tips = (
             (ox + length, oy, oz),
             (ox, oy + length, oz),
             (ox, oy, oz + length),
         )
-        dirs = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
         for i in range(3):
             src = world_axes_line_sources[i]
             src.SetPoint1(ox, oy, oz)
@@ -1306,12 +1373,11 @@ def create_server():
             cone.SetHeight(0.28 * length)
             cone.SetRadius(0.09 * length)
             cone.Modified()
-            label = world_axes_labels[i]
-            label.SetInput(names[i])
-            label.SetPosition(*tips[i])
-            label.VisibilityOn()
-        for actor in world_axes_actors:
-            actor.VisibilityOn()
+            world_axes_labels[i].SetPosition(*tips[i])
+
+    # Keep the arrows a constant on-screen size: recompute their world length
+    # from the camera at the start of every render (covers interactive zoom).
+    renderer.AddObserver("StartEvent", _rescale_world_axes)
 
     def _update_all_slices():
         try:
