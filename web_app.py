@@ -3118,6 +3118,26 @@ def create_server():
         if remote_view is not None:
             remote_view.update()
 
+    # Live-update the display when the colormap dropdown (right panel) changes,
+    # so the new colors appear immediately without re-clicking View Intensity /
+    # View RSM. Mirrors the clim handler: the raw scalar data is unchanged, so
+    # we just re-apply the color transfer function (volume) or rebuild the
+    # intensity frame's lookup table over the current data.
+    @state.change("colormap")
+    def _on_colormap_change(**kwargs):
+        if bool(getattr(state, "intensity_slider_show", False)) and current_frames:
+            _show_intensity_frame(
+                int(_float(getattr(state, "intensity_frame_index", 0), 0))
+            )
+            return
+        if current_volume is None:
+            return
+        _update_rendering()
+        _update_all_slices()
+        render_window.Render()
+        if remote_view is not None:
+            remote_view.update()
+
     # Clamp the CMS angle step to the valid [0, 360] range. Corrects a typed out-of-range value.
     @state.change("cms_angle_step")
     def _on_cms_angle_step_change(cms_angle_step=None, **kwargs):
@@ -3682,17 +3702,16 @@ def create_server():
                 ),
             ):
                 # Colormap selector. Bound to the same ``colormap`` state the
-                # volume/slice transfer functions read; changing it refreshes
-                # the rendering live (like the Contrast Limits slider below).
-                # The colors themselves come from vtkplotlib's colormapping
-                # (see _cmap_rgb / vpl.colors.as_vtk_cmap).
+                # volume/slice transfer functions read; the @state.change
+                # handler refreshes the rendering live (like the Contrast Limits
+                # slider below). The colors themselves come from vtkplotlib's
+                # colormapping (see _cmap_rgb / vpl.colors.as_vtk_cmap).
                 html.Strong(
                     "Colormap",
                     style="display:block; margin-bottom:6px; font-size:0.95rem;",
                 )
                 with html.Select(
                     v_model=("colormap", ""),
-                    change=ctrl.refresh_rendering,
                     style="width:100%; margin-bottom:14px;",
                 ):
                     for name in COLORMAP_NAMES:
