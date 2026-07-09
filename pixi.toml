@@ -26,3 +26,6 @@ trame = "*"
 trame-vtk = "*"
 trame-client = "*"
 trame-server = "*"
+
+[pypi-dependencies]
+vtkplotlib = ">=2.1.1, <3"
