@@ -1,5 +1,6 @@
 import os
 import asyncio
+import gc
 import math
 import time
 from pathlib import Path
@@ -9,6 +10,25 @@ import importlib
 import sys
 import types
 import re
+
+import matplotlib
+import matplotlib.cm as _mpl_cm
+
+# vtkplotlib 2.1.1 still calls the long-deprecated ``matplotlib.cm.get_cmap``,
+# which was removed in matplotlib 3.9+. When the pixi environment was rebuilt it
+# pulled a newer matplotlib, so ``vpl.colors.as_vtk_cmap`` started raising and
+# the colormap lookup silently fell back to grayscale. Restore a compatible
+# ``get_cmap`` shim so the original vtkplotlib colormaps keep working.
+if not hasattr(_mpl_cm, "get_cmap"):
+
+    def _get_cmap_compat(name=None, lut=None):
+        cmap = matplotlib.colormaps[name] if name is not None \
+            else matplotlib.colormaps[matplotlib.rcParams["image.cmap"]]
+        if lut is not None:
+            cmap = cmap.resampled(lut)
+        return cmap
+
+    _mpl_cm.get_cmap = _get_cmap_compat
 
 import vtkplotlib as vpl
 
@@ -1062,6 +1082,51 @@ def create_server():
         state.clim_hi = chi
         return (clo, chi)
 
+    def _hide_volume_overlays():
+        """Hide the 3D-only overlays when switching to the 2D intensity viewer.
+
+        The outline box, its per-corner coordinate labels and the world-axes
+        gizmo live in world/overlay coordinates tied to the RSM volume. When we
+        drop into the 2D intensity frame viewer (a parallel camera framed over a
+        small image) they would otherwise stay visible and project to a corner
+        of the screen -- this is the "world axes clumped in the bottom-left"
+        artifact seen after viewing the RSM and going back to the intensity
+        view. Hiding the actors here (and clearing ``world_axes_geom["visible"]``
+        so the per-render ``_rescale_world_axes`` observer stops repositioning
+        them) removes the artifact. The ``outline_show`` / ``world_axes_show``
+        state flags are left untouched, so returning to the RSM view via
+        ``_set_volume_data`` -> ``_update_all_slices`` restores whatever the user
+        had enabled.
+        """
+        outline_actor.VisibilityOff()
+        for _lbl in outline_label_actors:
+            _lbl.VisibilityOff()
+        world_axes_geom["visible"] = False
+        for _act in world_axes_actors:
+            _act.VisibilityOff()
+        for _lbl in world_axes_labels:
+            _lbl.VisibilityOff()
+
+    def _free_gpu_resources(*mappers):
+        """Release cached GPU resources for the given mappers and run a GC pass.
+
+        ``vtkSmartVolumeMapper`` and the 2D image reslice mappers cache their
+        uploaded volume/texture on the GPU. Repeatedly switching between the RSM
+        volume and the intensity viewer (or re-running load/build/regrid) leaves
+        the superseded GPU uploads -- and the large numpy / ``vtkImageData``
+        copies they were built from -- lingering, which is what made the server
+        progressively slower and eventually crash after many round-trips.
+        Dropping the resources for the view we are leaving lets VTK re-upload
+        only what the active view needs, and the explicit ``gc.collect`` promptly
+        reclaims the arrays that were just replaced.
+        """
+        for _m in mappers:
+            try:
+                _m.ReleaseGraphicsResources(render_window)
+            except Exception:
+                pass
+        gc.collect()
+
     def _update_rendering():
         if current_volume is None:
             return
@@ -1107,6 +1172,10 @@ def create_server():
         nonlocal current_volume, current_axes, render_range, current_image
         # Switching to a volume view supersedes the 2D intensity-frame viewer.
         intensity_actor.VisibilityOff()
+        # Free the GPU upload + vtkImageData behind the 2D intensity viewer we
+        # are leaving, so repeated intensity<->RSM round-trips don't accumulate
+        # graphics memory (see _free_gpu_resources).
+        _free_gpu_resources(intensity_mapper)
         _roi_set_active(False)  # the ROI selector only applies to the intensity view
         _cross_set_active(False)  # the beam-center cross only applies to the intensity view
         renderer.GetActiveCamera().ParallelProjectionOff()  # restore 3D perspective
@@ -1282,10 +1351,20 @@ def create_server():
         src.SetResolution(samples)
         src.CappingOff()
         src.Update()
+        # A cylindrical slice in reciprocal space is |Q_xy| = radius around the
+        # Qz axis at the Q-space ORIGIN (Qx = Qy = 0), spanning the full Qz
+        # range -- matching napari's _extract_cylindrical_surface_mesh
+        # (qx = r*cos θ, qy = r*sin θ). Rooting the tube at the volume's
+        # geometric center instead put its axis through mostly-empty grid cells
+        # (filled with the transparent display floor), so the probe sampled no
+        # real structure and the cylinder rendered as a uniform color unrelated
+        # to the RSM. World x/y map directly to Qx/Qy (positive spacing, origin
+        # = axis[0]), so Qx = Qy = 0 is world x = y = 0; only z uses the
+        # volume's z-center so the tube stays vertical and spans the full range.
         # vtkCylinderSource is aligned to Y; rotate so its axis lies along Z and
-        # translate to the volume center.
+        # translate onto the Qz axis.
         tf = vtkTransform()
-        tf.Translate(center[0], center[1], center[2])
+        tf.Translate(0.0, 0.0, center[2])
         tf.RotateX(90.0)
         tpd = vtkTransformPolyDataFilter()
         tpd.SetTransform(tf)
@@ -1941,6 +2020,10 @@ def create_server():
             current_builder = None
             regrid_volume = None
             regrid_axes = None
+            # A fresh load supersedes the previous experiment/dataframe/frames
+            # and any built map or regridded volume; reclaim them now so
+            # repeated loads don't pile up in RAM.
+            gc.collect()
             state.intensity_slider_show = False
             # The bundled loaders read ExperimentSetup from the YAML's
             # active_profile section, which may differ from the Data-tab ISR/CMS
@@ -2043,6 +2126,9 @@ def create_server():
                 None, _regrid_volume, current_builder, grid_shape, regrid_cb
             )
             regrid_volume, regrid_axes = volume, axes
+            # Drop the previous regridded volume (a full 3D array) that this run
+            # just replaced, so repeated regrids don't accumulate.
+            gc.collect()
             state.scalar_range = (
                 f"{float(np.nanmin(volume)):.4g} … {float(np.nanmax(volume)):.4g}"
             )
@@ -2462,6 +2548,14 @@ def create_server():
             actor.VisibilityOff()
         cyl_actor.VisibilityOff()
         sph_actor.VisibilityOff()
+        # Hide the outline box / corner labels / world-axes gizmo that belong to
+        # the 3D RSM view; otherwise they linger and project into a corner of
+        # the 2D frame viewer.
+        _hide_volume_overlays()
+        # Release the RSM volume's GPU upload (and reclaim the superseded arrays)
+        # now that the 3D view is no longer visible, so repeated switches don't
+        # accumulate graphics memory.
+        _free_gpu_resources(volume_mapper, *slice_mappers.values())
         state.intensity_frame_max = n - 1
         state.intensity_slider_show = True
         if int(_float(state.intensity_frame_index, 0)) != 0:
