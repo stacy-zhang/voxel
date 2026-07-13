@@ -1000,6 +1000,10 @@ def create_server():
     # style locks the camera straight-on while the 2D ROI selector is active so
     # the screen<->image coordinate mapping stays exact.
     roi_trackball_style = vtkInteractorStyleTrackballCamera()
+    # VTK's default mouse-wheel dolly (MouseWheelMotionFactor = 1.0) zooms ~21%
+    # per wheel notch, which felt far too sensitive to control. Dial it down so
+    # each notch nudges the zoom by a few percent for finer control.
+    roi_trackball_style.SetMouseWheelMotionFactor(0.2)
     roi_lock_style = vtkInteractorStyleUser()
     interactor.SetInteractorStyle(roi_trackball_style)
 
@@ -2509,11 +2513,57 @@ def create_server():
             _roi_update_crop_state()
             _roi_render()
 
+    def _roi_rescale_handles():
+        """Resize the ROI handle disks to the current camera zoom.
+
+        The handle radius is a fixed fraction of the parallel scale so the
+        disks keep a constant on-screen size, matching _roi_init_geometry. This
+        is called after a wheel zoom (which changes the parallel scale) without
+        resetting the ROI box position/size.
+        """
+        cam = renderer.GetActiveCamera()
+        if cam.GetParallelProjection():
+            ps = cam.GetParallelScale()
+        else:
+            ps = max(intensity_nx or 1, intensity_ny or 1) * 0.5
+        roi_state["handle_r"] = max(ps, 1e-6) * 0.02
+        roi_handle_src.SetRadius(roi_state["handle_r"])
+        roi_rot_src.SetRadius(roi_state["handle_r"])
+
+    def _intensity_wheel(obj, event):
+        """Zoom the intensity frame while the camera is locked.
+
+        The ROI selector / beam-center cross swap in ``roi_lock_style``
+        (vtkInteractorStyleUser), which has no wheel binding, so scrolling did
+        nothing over the intensity map. Handle the wheel here by adjusting the
+        parallel scale directly (the frame uses parallel projection). When the
+        3D trackball is active we return early and let it handle the wheel.
+        """
+        if not (roi_state["active"] or cross_state["active"]):
+            return
+        cam = renderer.GetActiveCamera()
+        # Forward = zoom in (smaller parallel scale). ~10% per notch keeps it
+        # gentle and roughly matches the RSM viewer's reduced sensitivity.
+        factor = 0.9 if event == "MouseWheelForwardEvent" else 1.0 / 0.9
+        if cam.GetParallelProjection():
+            cam.SetParallelScale(max(cam.GetParallelScale() * factor, 1e-6))
+        else:
+            cam.Dolly(1.0 / factor)
+        renderer.ResetCameraClippingRange()
+        if roi_state["active"]:
+            _roi_rescale_handles()
+            _roi_refresh_actors()
+        render_window.Render()
+        if remote_view is not None:
+            remote_view.update()
+
     # Observe the forwarded mouse events (priority above the camera style so a
     # grab on a handle/body edits the ROI rather than moving the camera).
     interactor.AddObserver("LeftButtonPressEvent", _roi_on_press, 10.0)
     interactor.AddObserver("MouseMoveEvent", _roi_on_move, 10.0)
     interactor.AddObserver("LeftButtonReleaseEvent", _roi_on_release, 10.0)
+    interactor.AddObserver("MouseWheelForwardEvent", _intensity_wheel, 10.0)
+    interactor.AddObserver("MouseWheelBackwardEvent", _intensity_wheel, 10.0)
 
     @state.change("roi_show")
     def _on_roi_show_change(roi_show=True, **kwargs):
