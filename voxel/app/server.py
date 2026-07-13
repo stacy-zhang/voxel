@@ -145,8 +145,8 @@ def create_server():
     # Build tab
     state.setdefault("space", "q")
     # Grid shape as "nx,ny,nz"; ny/nz may be "*" to auto-scale from the data
-    # extents. A single value ("100") expands to "100,*,*".
-    state.setdefault("grid_shape", "100,*,*")
+    # extents. A single value ("200") expands to "200,*,*".
+    state.setdefault("grid_shape", "200,*,*")
     state.setdefault("normalize", "mean")
     # UB orientation matrix (rows separated by newlines). Seeded with identity
     # and overwritten with the loaded UB after Load Data; the user can edit it.
