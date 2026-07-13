@@ -136,11 +136,29 @@ pixi run python main.py --no-browser
 Entry point that parses command-line arguments and launches the Trame server.
 
 ### `web_app.py`
-Core application logic:
-- **`create_server()`**: Initializes the Trame server with the accordion UI and the VTK rendering pipeline
-- **`run_server()`**: Starts the server with optional host/port configuration
-- **Controllers** (one per pipeline step): `load_data`, `view_intensity`, `crop_from_roi`, `build_rsm`, `regrid`, `view_rsm`, `refresh_rendering`, `stop_task`, `update_slices`, `export_vtr`
-- Helper functions for data loading, setup-field population, crop handling, volume rendering, and orthogonal/cylindrical/spherical slicing
+Thin backward-compatibility shim that re-exports `create_server` / `run_server`
+from `voxel.app.server`, so `import web_app` and `main.py` keep working.
+
+### Package layout (`voxel/`)
+The application is split by concern so new data types, reconstruction methods,
+or visualization capabilities can be added in isolation:
+
+- **`voxel/services`** — data access and state coercion:
+  - `backend.py`: bridge that imports the headless `rsm3d` loaders/builder and
+    resolves the defaults YAML path (`yaml_path`)
+  - `parsing.py`: pure helpers that turn browser state into typed values
+    (scan lists, UB matrix, goniometer axes, grid shape) plus the crop helpers
+- **`voxel/rsm3d`** — the reconstruction engine (STAGE 2), unchanged
+- **`voxel/visualization`** — render helpers:
+  - `colormaps.py`: `vtkColorTransferFunction` / `vtkPiecewiseFunction` /
+    `vtkLookupTable` builders, log-compression, and robust-percentile utilities
+- **`voxel/ui`** — static UI assets:
+  - `assets.py`: `COLORMAP_NAMES`, layer-toggle SVG icons, `DEFAULT_FRAME_COUNT`
+- **`voxel/app`** — orchestration (STAGE 3):
+  - `server.py`: `create_server()` builds the Trame server, the VTK scene, and
+    the per-step controllers (`load_data`, `view_intensity`, `crop_from_roi`,
+    `build_rsm`, `regrid`, `view_rsm`, `refresh_rendering`, `stop_task`,
+    `update_slices`, `export_vtr`); `run_server()` starts it
 
 ### Integration with `napari_resview`
 - **Loaders**: `RSMDataLoader_ISR`, `RSMDataloader_CMS` – load experimental data
@@ -188,7 +206,6 @@ Core application logic:
 
 ## Future Improvements (Deferred)
 
-- **Modularity**: Refactor into a package structure with separate UI and backend modules
 - **Performance**: Async/streamed loading for large datasets, caching strategies
 - **Export Formats**: FITS, NetCDF, raw binary alongside VTR
 
