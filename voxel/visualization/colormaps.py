@@ -118,6 +118,68 @@ def _apply_opacity_function(
     opacity_tf.AddPoint(hi, min(1.0, opacity_scale))
 
 
+def _apply_opacity_points(
+    opacity_tf: vtkPiecewiseFunction,
+    value_range: Optional[Tuple[float, float]],
+    points,
+    opacity_scale: float,
+) -> None:
+    """Build the opacity transfer function from ParaView-style control points.
+
+    ``points`` is a list of ``[x, y]`` pairs where ``x`` is the *normalized*
+    position across the contrast window ``value_range`` (0 -> lo, 1 -> hi) and
+    ``y`` is the opacity (0..1). This lets the right-panel graph editor shape an
+    arbitrary piecewise-linear opacity ramp instead of the single linear ramp in
+    ``_apply_opacity_function``. Falls back to that linear ramp when no usable
+    points are supplied so existing behaviour is preserved.
+    """
+    cleaned = []
+    if points:
+        for p in points:
+            try:
+                x = float(p[0])
+                y = float(p[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            cleaned.append((max(0.0, min(1.0, x)), max(0.0, min(1.0, y))))
+    if len(cleaned) < 2:
+        _apply_opacity_function(opacity_tf, value_range, opacity_scale)
+        return
+
+    opacity_tf.RemoveAllPoints()
+    if value_range is None or value_range[0] == value_range[1]:
+        lo, hi = 0.0, 1.0
+    else:
+        lo, hi = float(value_range[0]), float(value_range[1])
+        if hi <= lo:
+            hi = lo + 1.0
+    scale = max(0.0, min(float(opacity_scale), 4.0))
+    cleaned.sort(key=lambda q: q[0])
+    for x, y in cleaned:
+        val = lo + (hi - lo) * x
+        opacity_tf.AddPoint(float(val), min(1.0, y * scale))
+
+
+def cmap_css_gradient(colormap: str, n: int = 24) -> str:
+    """Return a CSS ``linear-gradient(...)`` string sampling ``colormap``.
+
+    Used to paint the background of the right-panel transfer-function editor so
+    the graph's x-axis reads as the actual color range (as in ParaView). Samples
+    the same vtkplotlib colormap the render path uses, so the swatch matches the
+    volume. Falls back to a black->white ramp when the colormap can't resolve.
+    """
+    colors = _cmap_rgb(colormap, n)
+    stops = []
+    if colors is not None:
+        for i, rgb in enumerate(colors):
+            pct = i / (n - 1) * 100.0
+            r, g, b = (int(round(c * 255)) for c in rgb)
+            stops.append(f"rgb({r},{g},{b}) {pct:.1f}%")
+    else:
+        stops = ["rgb(0,0,0) 0%", "rgb(255,255,255) 100%"]
+    return "linear-gradient(to right, " + ", ".join(stops) + ")"
+
+
 def _log1p_clip(a: np.ndarray) -> np.ndarray:
     """Log-compress the volume for display (mirrors the napari path).
 

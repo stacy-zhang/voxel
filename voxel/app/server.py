@@ -68,6 +68,7 @@ from vtkmodules.util import numpy_support
 from trame.app import get_server
 from trame.ui.html import DivLayout
 from trame.widgets import html
+from trame_client.widgets.html import HtmlElement  # base class for raw SVG tags
 from trame.widgets.vtk import VtkRemoteView
 
 # --- pipeline backend (STAGE 1 & 2) ------------------------------------
@@ -100,6 +101,8 @@ from voxel.visualization.colormaps import (
     _cmap_rgb,
     _apply_color_transfer_function,
     _apply_opacity_function,
+    _apply_opacity_points,
+    cmap_css_gradient,
     _log1p_clip,
     _robust_percentiles,
     _make_lookup_table,
@@ -234,6 +237,14 @@ def create_server():
     state.setdefault("shade", False)
     state.setdefault("opacity_scale", 1.0)
     state.setdefault("colormap", "viridis")
+    # ParaView-style opacity transfer-function editor (right panel). Control
+    # points are [x, y] with x normalized 0..1 across the contrast window
+    # [clim_lo, clim_hi] and y the opacity 0..1. The default two-point ramp
+    # reproduces the previous linear napari-matching opacity. ``cmap_gradient``
+    # is the CSS gradient painted behind the editor graph, kept in sync with the
+    # active colormap so the x-axis reads as the real color range.
+    state.setdefault("opacity_points", [[0.0, 0.0], [1.0, 1.0]])
+    state.setdefault("cmap_gradient", cmap_css_gradient("viridis"))
     state.setdefault("status", "Ready")
     state.setdefault("status_log", ["Ready"])
     state.setdefault("scalar_range", "—")
@@ -867,7 +878,12 @@ def create_server():
             )
 
         _apply_color_transfer_function(color_tf, _ensure_path(state.colormap), scalar_range)
-        _apply_opacity_function(opacity_tf, scalar_range, _float(state.opacity_scale, 1.0))
+        _apply_opacity_points(
+            opacity_tf,
+            scalar_range,
+            getattr(state, "opacity_points", None),
+            _float(state.opacity_scale, 1.0),
+        )
         render_window.Render()
         # remote_view is created later, inside the UI layout. Guard against it
         # being None if a render is somehow triggered before the UI is built.
@@ -3286,6 +3302,9 @@ def create_server():
     # intensity frame's lookup table over the current data.
     @state.change("colormap")
     def _on_colormap_change(**kwargs):
+        # Keep the transfer-function editor's background swatch matching the
+        # active colormap so its x-axis reads as the real color range.
+        state.cmap_gradient = cmap_css_gradient(_ensure_path(state.colormap))
         if bool(getattr(state, "intensity_slider_show", False)) and current_frames:
             _show_intensity_frame(
                 int(_float(getattr(state, "intensity_frame_index", 0), 0))
@@ -3295,6 +3314,19 @@ def create_server():
             return
         _update_rendering()
         _update_all_slices()
+        render_window.Render()
+        if remote_view is not None:
+            remote_view.update()
+
+    # Live-update the volume rendering when the ParaView-style opacity transfer
+    # function is edited in the right panel. Only the opacity ramp changes -- the
+    # scalar data fed to VTK is unchanged -- so we just re-apply the transfer
+    # functions over the current window and re-render.
+    @state.change("opacity_points")
+    def _on_opacity_points_change(**kwargs):
+        if current_volume is None:
+            return
+        _update_rendering()
         render_window.Render()
         if remote_view is not None:
             remote_view.update()
@@ -4000,6 +4032,132 @@ def create_server():
                             "text-align:center; font-variant-numeric:tabular-nums;"
                         ),
                     )
+
+                    # ---- Opacity transfer-function editor (ParaView-style) ----
+                    # A graph whose x-axis spans the color range (painted with
+                    # the active colormap) and whose y-axis is opacity. Users
+                    # drag the round handles to reshape the piecewise-linear
+                    # opacity ramp, double-click on the graph to add a point, and
+                    # right-click a handle to remove it. Points are stored in the
+                    # ``opacity_points`` state ([x,y], x normalized over the
+                    # contrast window); the server rebuilds the VTK opacity
+                    # transfer function from them (see _apply_opacity_points).
+                    # During a drag we only ``set`` the client state (instant
+                    # visual feedback) and ``flushState`` once on release, so the
+                    # volume re-renders a single time per edit instead of on
+                    # every pointer move.
+                    html.Strong("Opacity Transfer Function", style=_pl_hdr + " margin-top:12px;")
+                    with html.Div(
+                        style=(
+                            "position:relative; width:100%; height:130px; "
+                            "border:1px solid #3a3a40; border-radius:4px; "
+                            "background:#0b0b0e; overflow:hidden; "
+                            "touch-action:none; user-select:none; margin-bottom:6px;"
+                        ),
+                        dblclick=(
+                            "var r=$event.currentTarget.getBoundingClientRect();"
+                            "var x=Math.max(0.01,Math.min(0.99,($event.clientX-r.left)/r.width));"
+                            "var y=Math.max(0,Math.min(1,1-($event.clientY-r.top)/r.height));"
+                            "var pts=opacity_points.map(function(q){return [q[0],q[1]];});"
+                            "pts.push([x,y]);pts.sort(function(a,b){return a[0]-b[0];});"
+                            "opacity_points=pts;"
+                        ),
+                    ):
+                        # Colormap swatch strip along the bottom = the x-axis
+                        # color range (ParaView shows the same band).
+                        html.Div(
+                            style=(
+                                "{position:'absolute',left:'0',right:'0',bottom:'0',"
+                                "height:'14px',pointerEvents:'none',"
+                                "background:cmap_gradient}",
+                            ),
+                        )
+                        # SVG overlay: filled area + polyline through the points.
+                        # pointer-events:none so double-clicks fall through to the
+                        # container's add-point handler.
+                        with html.Svg(
+                            viewBox="0 0 100 100",
+                            preserveAspectRatio="none",
+                            style=(
+                                "position:absolute; inset:0; width:100%; height:100%; "
+                                "pointer-events:none;"
+                            ),
+                        ):
+                            HtmlElement(
+                                "polygon",
+                                points=(
+                                    "opacity_points.map(function(p){return (p[0]*100)+','"
+                                    "+((1-p[1])*100);}).join(' ')+' 100,100 0,100'",
+                                ),
+                                fill="rgba(106,169,255,0.18)",
+                                stroke="none",
+                            )
+                            HtmlElement(
+                                "polyline",
+                                points=(
+                                    "opacity_points.map(function(p){return (p[0]*100)+','"
+                                    "+((1-p[1])*100);}).join(' ')",
+                                ),
+                                fill="none",
+                                stroke="#6aa9ff",
+                                **{"stroke-width": "2", "vector-effect": "non-scaling-stroke"},
+                            )
+                        # Draggable handles (HTML divs so they stay round
+                        # regardless of the non-uniform SVG scaling). Dragging
+                        # uses pointer capture + a Vue-bound pointermove (gated
+                        # on the button being held) so the point follows the
+                        # cursor even outside the handle, and writes straight to
+                        # the ``opacity_points`` state (which re-renders the
+                        # volume and moves the handle live).
+                        html.Div(
+                            v_for="(pt, pi) in opacity_points",
+                            key=("pi",),
+                            style=(
+                                "`position:absolute; left:${pt[0]*100}%; top:${(1-pt[1])*100}%;"
+                                " width:14px; height:14px; margin:-7px 0 0 -7px; border-radius:50%;"
+                                " background:#ffffff; border:2px solid #6aa9ff; box-shadow:0 0 3px"
+                                " rgba(0,0,0,.7); touch-action:none; cursor:${pi===0||"
+                                "pi===opacity_points.length-1?'ns-resize':'move'}`",
+                            ),
+                            pointerdown=(
+                                "$event.preventDefault();$event.stopPropagation();"
+                                "$event.currentTarget.setPointerCapture($event.pointerId);"
+                            ),
+                            pointermove=(
+                                "if($event.buttons!==1)return;"
+                                "$event.preventDefault();"
+                                "var r=$event.currentTarget.parentElement.getBoundingClientRect();"
+                                "var x=Math.max(0,Math.min(1,($event.clientX-r.left)/r.width));"
+                                "var y=Math.max(0,Math.min(1,1-($event.clientY-r.top)/r.height));"
+                                "var pts=opacity_points.map(function(q){return [q[0],q[1]];});"
+                                "if(pi===0){x=0;}else if(pi===pts.length-1){x=1;}"
+                                "else{x=Math.max(pts[pi-1][0]+0.005,Math.min(pts[pi+1][0]-0.005,x));}"
+                                "pts[pi]=[x,y];opacity_points=pts;"
+                            ),
+                            contextmenu=(
+                                "$event.preventDefault();$event.stopPropagation();"
+                                "if(pi<=0||pi>=opacity_points.length-1)return;"
+                                "var pts=opacity_points.map(function(q){return [q[0],q[1]];});"
+                                "pts.splice(pi,1);opacity_points=pts;"
+                            ),
+                        )
+                    with html.Div(
+                        style="display:flex; justify-content:space-between; "
+                        "align-items:center; margin-bottom:14px;"
+                    ):
+                        html.Span(
+                            "double-click: add \u00b7 drag: move \u00b7 right-click: remove",
+                            style="font-size:0.68rem; color:#777;",
+                        )
+                        html.Button(
+                            "Reset",
+                            click="opacity_points=[[0,0],[1,1]]",
+                            style=(
+                                "font-size:0.72rem; padding:2px 8px; cursor:pointer; "
+                                "background:#26262c; color:#ccc; border:1px solid #3a3a40; "
+                                "border-radius:3px;"
+                            ),
+                        )
 
                 # Orthogonal slice (x/y/z share one colormap + opacity).
                 with html.Div(
