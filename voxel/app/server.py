@@ -4074,10 +4074,16 @@ def create_server():
                         )
                         # SVG overlay: filled area + polyline through the points.
                         # pointer-events:none so double-clicks fall through to the
-                        # container's add-point handler.
+                        # container's add-point handler. NOTE: trame filters
+                        # element attributes by an allow-list, and SVG attributes
+                        # (viewBox / points / stroke ...) are NOT in it, so they
+                        # must be declared via ``__properties`` or they are
+                        # silently dropped (leaving an empty <polyline/> that
+                        # draws nothing).
                         with html.Svg(
                             viewBox="0 0 100 100",
                             preserveAspectRatio="none",
+                            __properties=["viewBox", "preserveAspectRatio"],
                             style=(
                                 "position:absolute; inset:0; width:100%; height:100%; "
                                 "pointer-events:none;"
@@ -4091,6 +4097,7 @@ def create_server():
                                 ),
                                 fill="rgba(106,169,255,0.18)",
                                 stroke="none",
+                                __properties=["points", "fill", "stroke"],
                             )
                             HtmlElement(
                                 "polyline",
@@ -4100,7 +4107,15 @@ def create_server():
                                 ),
                                 fill="none",
                                 stroke="#6aa9ff",
-                                **{"stroke-width": "2", "vector-effect": "non-scaling-stroke"},
+                                stroke_width="2",
+                                vector_effect="non-scaling-stroke",
+                                __properties=[
+                                    "points",
+                                    "fill",
+                                    "stroke",
+                                    ("stroke_width", "stroke-width"),
+                                    ("vector_effect", "vector-effect"),
+                                ],
                             )
                         # Draggable handles (HTML divs so they stay round
                         # regardless of the non-uniform SVG scaling). Dragging
