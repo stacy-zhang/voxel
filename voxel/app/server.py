@@ -4063,13 +4063,15 @@ def create_server():
                             "opacity_points=pts;"
                         ),
                     ):
-                        # Colormap swatch strip along the bottom = the x-axis
-                        # color range (ParaView shows the same band).
+                        # Full-area colormap gradient painted behind the curve.
+                        # ParaView colors the region *under* the opacity line
+                        # with the colormap; the SVG "mask" polygon below paints
+                        # the area ABOVE the line with the panel background, so
+                        # only the region beneath the curve shows the gradient.
                         html.Div(
                             style=(
-                                "{position:'absolute',left:'0',right:'0',bottom:'0',"
-                                "height:'14px',pointerEvents:'none',"
-                                "background:cmap_gradient}",
+                                "{position:'absolute',inset:'0',"
+                                "pointerEvents:'none',background:cmap_gradient}",
                             ),
                         )
                         # SVG overlay: filled area + polyline through the points.
@@ -4089,13 +4091,18 @@ def create_server():
                                 "pointer-events:none;"
                             ),
                         ):
+                            # Mask polygon: covers the area ABOVE the curve with
+                            # the panel background color so the colormap gradient
+                            # only shows *under* the piecewise line. Its points
+                            # are the curve vertices followed by the two TOP
+                            # corners (100,0) and (0,0).
                             HtmlElement(
                                 "polygon",
                                 points=(
                                     "opacity_points.map(function(p){return (p[0]*100)+','"
-                                    "+((1-p[1])*100);}).join(' ')+' 100,100 0,100'",
+                                    "+((1-p[1])*100);}).join(' ')+' 100,0 0,0'",
                                 ),
-                                fill="rgba(106,169,255,0.18)",
+                                fill="#0b0b0e",
                                 stroke="none",
                                 __properties=["points", "fill", "stroke"],
                             )
@@ -4168,6 +4175,14 @@ def create_server():
                                 "pts.splice(pi,1);opacity_points=pts;"
                             ),
                         )
+                    # X-axis colormap bar below the graph (ParaView's horizontal
+                    # color-range strip), reading as the data value across x.
+                    html.Div(
+                        style=(
+                            "{width:'100%',height:'14px',borderRadius:'3px',"
+                            "marginBottom:'8px',background:cmap_gradient}",
+                        ),
+                    )
                     with html.Div(
                         style="display:flex; justify-content:space-between; "
                         "align-items:center; margin-bottom:14px;"
