@@ -2948,6 +2948,11 @@ def create_server():
         if current_image is None or render_range is None:
             _set_status("View an RSM volume before taking a snapshot.")
             return
+        # The snapshot only ever renders an attenuated MIP, so it is meaningful
+        # only when the live view is in that mode (mirrors the disabled button).
+        if (_ensure_path(getattr(state, "rendering", "")) or "") != "attenuated_mip":
+            _set_status("HQ snapshot is only available in attenuated_mip rendering mode.")
+            return
         state.hq_snapshot_busy = True
         state.flush()
         try:
@@ -3663,14 +3668,28 @@ def create_server():
                         html.Button("\u23F9 Stop", click=ctrl.stop_task, style=_btn)
 
                     # Faithful napari-style attenuated-MIP snapshot of the
-                    # current view (CPU-rendered; takes a few seconds). Disabled
-                    # while a snapshot is already rendering.
+                    # current view (CPU-rendered; takes a few seconds). The
+                    # snapshot always produces an *attenuated* MIP, which only
+                    # matches what the live view represents when the rendering
+                    # mode is ``attenuated_mip`` -- so the button is disabled
+                    # (and dimmed) in any other mode, and while one is already
+                    # rendering.
                     html.Button(
                         "{{ hq_snapshot_busy ? '\u23F3 Rendering\u2026' : "
                         "'\u2728 HQ Snapshot (attenuated MIP)' }}",
                         click=ctrl.hq_snapshot,
-                        disabled=("hq_snapshot_busy",),
-                        style="width:100%; margin-top:8px; padding:10px 8px; cursor:pointer;",
+                        disabled=("hq_snapshot_busy || rendering !== 'attenuated_mip'",),
+                        title=(
+                            "rendering === 'attenuated_mip' ? 'Render a high-quality "
+                            "attenuated-MIP snapshot of the current view' : 'Set Rendering "
+                            "to attenuated_mip to enable the HQ snapshot'",
+                        ),
+                        style=(
+                            "`width:100%; margin-top:8px; padding:10px 8px; "
+                            "cursor:${(hq_snapshot_busy || rendering !== 'attenuated_mip')"
+                            " ? 'not-allowed' : 'pointer'}; "
+                            "opacity:${rendering === 'attenuated_mip' ? 1 : 0.5};`",
+                        ),
                     )
 
                     with html.Div(style="display:flex; align-items:center; margin-top:14px;"):
