@@ -201,14 +201,16 @@ def create_server():
     state.setdefault("slice_x_pos", 50)
     state.setdefault("slice_y_pos", 50)
     state.setdefault("slice_z_pos", 50)
-    # Per-axis azimuthal (phi) tilt of each orthogonal slice plane, in degrees.
-    # phi = 0 keeps the plane perpendicular to its axis (the classic behavior);
-    # a non-zero phi rotates the plane normal so the slice is no longer centered
+    # Per-axis tilt of each orthogonal slice plane, in degrees.
+    # tilt = 0 keeps the plane perpendicular to its axis (the classic behavior);
+    # a non-zero tilt rotates the plane normal so the slice is no longer centered
     # on the pure x/y/z axis. X and Y planes tilt about the Qz (vertical) axis;
     # the Z plane tilts about the Qx axis (a Z rotation would be a no-op there).
-    state.setdefault("slice_x_phi", 0)
-    state.setdefault("slice_y_phi", 0)
-    state.setdefault("slice_z_phi", 0)
+    # NOTE: unrelated to the diffractometer's phi goniometer angle -- this is a
+    # pure rendering transform of the reconstructed Q-space volume.
+    state.setdefault("slice_x_tilt", 0)
+    state.setdefault("slice_y_tilt", 0)
+    state.setdefault("slice_z_tilt", 0)
     state.setdefault("slice_opacity", 0.8)
     state.setdefault("slice_cmap", "turbo")
     state.setdefault("slice_show_border", True)
@@ -230,11 +232,11 @@ def create_server():
     state.setdefault("cyl_samples", 64)
     state.setdefault("cyl_opacity", 0.7)
     state.setdefault("cyl_cmap", "plasma")
-    # Azimuthal (phi) tilt of the cylinder axis, in degrees. phi = 0 keeps the
-    # cylinder axis aligned with Qz (the classic behavior); a non-zero phi
-    # tilts the axis in the Qy-Qz plane so the tube is no longer centered on
+    # Tilt of the cylinder axis, in degrees. tilt = 0 keeps the
+    # cylinder axis aligned with Qz (the classic behavior); a non-zero tilt
+    # leans the axis in the Qy-Qz plane so the tube is no longer centered on
     # the z axis.
-    state.setdefault("cyl_phi", 0)
+    state.setdefault("cyl_tilt", 0)
 
     ## spherical slicing (Q space only)
     state.setdefault("sph_show", False)
@@ -279,8 +281,26 @@ def create_server():
     state.setdefault("specular_power", 10.0)
 
     # File browser dialog state
+    #
+    # ``VOXEL_DATA_ROOT`` lets a deployment redirect the in-app file browser to a
+    # specific directory (e.g. the mount point where host data is bind-mounted
+    # into the container, such as ``/data``). When set, the browser both starts
+    # there AND is confined to that subtree, so a publicly reachable instance
+    # cannot be used to walk the rest of the container filesystem. When unset
+    # (e.g. local ``pixi run start``), behavior is unchanged: it starts at the
+    # user's home directory with full navigation.
+    def _resolve_browse_root():
+        root = os.environ.get("VOXEL_DATA_ROOT", "").strip()
+        if root:
+            candidate = Path(root).expanduser()
+            if candidate.is_dir():
+                return candidate
+        return None
+
+    browse_root = _resolve_browse_root()
+
     state.setdefault("fb_show", False)
-    state.setdefault("fb_cwd", str(Path.home()))
+    state.setdefault("fb_cwd", str(browse_root or Path.home()))
     state.setdefault("fb_items", [])
     state.setdefault("fb_target", "")
     state.setdefault("fb_mode", "file")
@@ -1017,7 +1037,7 @@ def create_server():
         """Rotate a 3-vector by ``angle`` radians about a world axis.
 
         ``rot_axis`` is 0 (Qx), 1 (Qy) or 2 (Qz). Used to tilt slice-plane
-        normals / the cylinder axis for the phi-rotation feature.
+        normals / the cylinder axis for the slice tilting feature.
         """
         c, s = math.cos(angle), math.sin(angle)
         x, y, z = vec
@@ -1047,13 +1067,13 @@ def create_server():
         origin[0], origin[1], origin[2] = center
         origin[axis_index] = coord
 
-        # Azimuthal (phi) tilt: rotate the plane normal so the slice is no
+        # Tilt: rotate the plane normal so the slice is no
         # longer perpendicular to its pure axis. X/Y planes tilt about Qz; the
         # Z plane tilts about Qx (rotating a Z normal about Qz is a no-op).
-        phi = math.radians(_float(getattr(state, f"slice_{axis}_phi", 0.0), 0.0))
-        if phi:
+        tilt = math.radians(_float(getattr(state, f"slice_{axis}_tilt", 0.0), 0.0))
+        if tilt:
             rot_axis = 0 if axis == "z" else 2
-            normal = _rotate_vector(normal, rot_axis, phi)
+            normal = _rotate_vector(normal, rot_axis, tilt)
 
         mapper = slice_mappers[axis]
         mapper.SetInputData(current_image)
@@ -1142,14 +1162,14 @@ def create_server():
         coords[:, 1] = np.tile(ys, nz)
         coords[:, 2] = np.repeat(zc, n_theta)
 
-        # Azimuthal (phi) tilt: rotate the whole tube about Qx, pivoting on the
+        # Tilt: rotate the whole tube about Qx, pivoting on the
         # z-center so the cylinder axis leans out of Qz into the Qy-Qz plane
-        # instead of staying centered on the z axis. phi = 0 leaves the classic
+        # instead of staying centered on the z axis. tilt = 0 leaves the classic
         # z-aligned tube untouched.
-        phi = math.radians(_float(getattr(state, "cyl_phi", 0.0), 0.0))
-        if phi:
+        tilt = math.radians(_float(getattr(state, "cyl_tilt", 0.0), 0.0))
+        if tilt:
             z_mid = 0.5 * (zc[0] + zc[-1]) if nz else 0.0
-            c, s = math.cos(phi), math.sin(phi)
+            c, s = math.cos(tilt), math.sin(tilt)
             yv = coords[:, 1].copy()
             zv = coords[:, 2] - z_mid
             coords[:, 1] = yv * c - zv * s
@@ -3200,7 +3220,14 @@ def create_server():
     def _fb_refresh(path: str):
         target_dir = Path(_ensure_path(path)).expanduser()
         if not target_dir.is_dir():
-            target_dir = target_dir.parent if target_dir.parent.is_dir() else Path.home()
+            target_dir = target_dir.parent if target_dir.parent.is_dir() else (browse_root or Path.home())
+        # When a browse root is configured (VOXEL_DATA_ROOT), keep navigation
+        # inside it so web users cannot walk the whole container filesystem.
+        if browse_root is not None:
+            try:
+                target_dir.resolve().relative_to(browse_root.resolve())
+            except ValueError:
+                target_dir = browse_root
         mode = _ensure_path(state.fb_mode) or "file"
         entries = []
         try:
@@ -3246,7 +3273,7 @@ def create_server():
         elif current and start.parent.is_dir():
             start_dir = start.parent
         else:
-            start_dir = Path.home()
+            start_dir = browse_root or Path.home()
         _fb_refresh(str(start_dir))
         state.fb_show = True
 
@@ -3414,13 +3441,13 @@ def create_server():
         if remote_view is not None:
             remote_view.update()
 
-    # Live-update the phi (azimuthal tilt) of the orthogonal slice planes and
+    # Live-update the tilt of the orthogonal slice planes and
     # the cylinder axis as the user drags the right-panel angle inputs. A
     # state.change observer reliably sees the flushed value (the input's own
     # ``change=ctrl.update_slices`` can fire before v-model syncs), so the
     # oblique slice re-renders immediately.
-    @state.change("slice_x_phi", "slice_y_phi", "slice_z_phi", "cyl_phi")
-    def _on_slice_phi_change(**kwargs):
+    @state.change("slice_x_tilt", "slice_y_tilt", "slice_z_tilt", "cyl_tilt")
+    def _on_slice_tilt_change(**kwargs):
         if current_volume is None:
             return
         _update_all_slices()
@@ -4318,23 +4345,23 @@ def create_server():
                         v_model=("slice_opacity", ""), type="number", min="0", max="1",
                         step="0.1", change=ctrl.update_slices, style=_pl_inp,
                     )
-                    # Azimuthal (phi) tilt of the slice plane. Each axis binds
-                    # its own angle so the plane can be oblique instead of
-                    # perpendicular to the pure x/y/z axis; X/Y tilt about Qz
-                    # and Z tilts about Qx (see _update_ortho_slice).
-                    html.Label("Rotation \u03c6 (\u00b0)", style=_pl_lbl)
+                    # Tilt of the slice plane. Each axis binds its own angle so
+                    # the plane can be oblique instead of perpendicular to the
+                    # pure x/y/z axis; X/Y tilt about Qz and Z tilts about Qx
+                    # (see _update_ortho_slice).
+                    html.Label("Tilt (\u00b0)", style=_pl_lbl)
                     for _ax in ("x", "y", "z"):
                         with html.Div(
                             v_if=f"selected_layer === 'slice_{_ax}'",
                             style="display:flex; align-items:center; gap:8px;",
                         ):
                             html.Input(
-                                v_model=(f"slice_{_ax}_phi", ""), type="range",
+                                v_model=(f"slice_{_ax}_tilt", ""), type="range",
                                 min="-90", max="90", step="1",
                                 change=ctrl.update_slices, style="flex:1;",
                             )
                             html.Span(
-                                "{{ " + f"slice_{_ax}_phi" + " }}\u00b0",
+                                "{{ " + f"slice_{_ax}_tilt" + " }}\u00b0",
                                 style="width:42px; font-size:0.8rem; text-align:right;",
                             )
 
@@ -4361,18 +4388,18 @@ def create_server():
                         v_model=("cyl_samples", ""), type="number", min="16", max="360",
                         step="8", change=ctrl.update_slices, style=_pl_inp,
                     )
-                    # Azimuthal (phi) tilt of the cylinder axis away from Qz
-                    # (see _update_cylinder), so the tube need not be centered
-                    # on the z axis.
-                    html.Label("Rotation \u03c6 (\u00b0)", style=_pl_lbl)
+                    # Tilt of the cylinder axis away from Qz (see
+                    # _update_cylinder), so the tube need not be centered on the
+                    # z axis.
+                    html.Label("Tilt (\u00b0)", style=_pl_lbl)
                     with html.Div(style="display:flex; align-items:center; gap:8px;"):
                         html.Input(
-                            v_model=("cyl_phi", ""), type="range",
+                            v_model=("cyl_tilt", ""), type="range",
                             min="-90", max="90", step="1",
                             change=ctrl.update_slices, style="flex:1;",
                         )
                         html.Span(
-                            "{{ cyl_phi }}\u00b0",
+                            "{{ cyl_tilt }}\u00b0",
                             style="width:42px; font-size:0.8rem; text-align:right;",
                         )
 
