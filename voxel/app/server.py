@@ -226,6 +226,11 @@ def create_server():
     ## volume's origin corner -- a visual orientation guide, mirrors napari)
     state.setdefault("world_axes_show", True)
 
+    ## phi = 0 reference plane: a translucent quad marking where the
+    ## diffractometer's phi = 0 sample orientation lands in the reconstructed
+    ## volume -- the Qx-Qz plane (Qy = 0, i.e. the world x-z plane)
+    state.setdefault("phi0_show", True)
+
     ## cylindrical slicing (Q space only)
     state.setdefault("cyl_show", False)
     state.setdefault("cyl_radius", 1.0)
@@ -544,6 +549,89 @@ def create_server():
         world_axes_actors.append(_ca)
         world_axes_labels.append(_wlbl)
 
+    # --- phi = 0 reference plane -----------------------------------------
+    # 3D actor in the volume's (Q) world coordinates, so it rotates together with
+    # the map; comes with a floating "phi = 0" billboard label.
+    # Visual orientation reference, layer is toggled via ``phi0_show``
+    # The 4 corners span the Qx and Qz extents at Qy = 0, extended well beyond
+    # the volume in _update_phi0_plane so the edges stay visible even where the
+    # opaque volume covers the middle.
+    phi0_pts = vtkPoints()
+    phi0_pts.SetNumberOfPoints(4)
+    phi0_poly = vtkPolyData()
+    phi0_poly.SetPoints(phi0_pts)
+    _phi0_cells = vtkCellArray()
+    _phi0_cells.InsertNextCell(4)
+    for _pi in range(4):
+        _phi0_cells.InsertCellPoint(_pi)
+    phi0_poly.SetPolys(_phi0_cells)
+    phi0_mapper = vtkPolyDataMapper()
+    phi0_mapper.SetInputData(phi0_poly)
+    _phi0_color = (1.0, 0.6, 0.25)
+    phi0_actor = vtkActor()
+    phi0_actor.SetMapper(phi0_mapper)
+    phi0_actor.GetProperty().SetColor(*_phi0_color)
+    phi0_actor.GetProperty().SetOpacity(0.15)
+    phi0_actor.GetProperty().LightingOff()
+    phi0_actor.GetProperty().SetBackfaceCulling(0)  # visible from both sides
+    phi0_actor.PickableOff()
+    phi0_actor.VisibilityOff()
+    renderer.AddActor(phi0_actor)
+
+    # Bright, opaque border tracing the same 4 corners so the plane's extent
+    # reads clearly even where the translucent fill is hidden behind the volume.
+    phi0_border_poly = vtkPolyData()
+    phi0_border_poly.SetPoints(phi0_pts)
+    _phi0_border_cells = vtkCellArray()
+    _phi0_loop = vtkPolyLine()
+    _phi0_loop.GetPointIds().SetNumberOfIds(5)
+    for _i, _pid in enumerate((0, 1, 2, 3, 0)):
+        _phi0_loop.GetPointIds().SetId(_i, _pid)
+    _phi0_border_cells.InsertNextCell(_phi0_loop)
+    phi0_border_poly.SetLines(_phi0_border_cells)
+    phi0_border_mapper = vtkPolyDataMapper()
+    phi0_border_mapper.SetInputData(phi0_border_poly)
+    phi0_border_actor = vtkActor()
+    phi0_border_actor.SetMapper(phi0_border_mapper)
+    phi0_border_actor.GetProperty().SetColor(*_phi0_color)
+    phi0_border_actor.GetProperty().SetLineWidth(2.5)
+    phi0_border_actor.GetProperty().LightingOff()
+    phi0_border_actor.PickableOff()
+    phi0_border_actor.VisibilityOff()
+    renderer.AddActor(phi0_border_actor)
+
+    # Leader line tying the off-to-the-side label back to the plane edge, so the
+    # label reads clearly away from the translucent fill yet stays associated.
+    phi0_leader_pts = vtkPoints()
+    phi0_leader_pts.SetNumberOfPoints(2)
+    phi0_leader_poly = vtkPolyData()
+    phi0_leader_poly.SetPoints(phi0_leader_pts)
+    _phi0_leader_cells = vtkCellArray()
+    _phi0_leader_line = vtkLine()
+    _phi0_leader_line.GetPointIds().SetId(0, 0)
+    _phi0_leader_line.GetPointIds().SetId(1, 1)
+    _phi0_leader_cells.InsertNextCell(_phi0_leader_line)
+    phi0_leader_poly.SetLines(_phi0_leader_cells)
+    phi0_leader_mapper = vtkPolyDataMapper()
+    phi0_leader_mapper.SetInputData(phi0_leader_poly)
+    phi0_leader_actor = vtkActor()
+    phi0_leader_actor.SetMapper(phi0_leader_mapper)
+    phi0_leader_actor.GetProperty().SetColor(*_phi0_color)
+    phi0_leader_actor.GetProperty().SetLineWidth(1.5)
+    phi0_leader_actor.GetProperty().LightingOff()
+    phi0_leader_actor.PickableOff()
+    phi0_leader_actor.VisibilityOff()
+    renderer.AddActor(phi0_leader_actor)
+
+    phi0_label = vtkBillboardTextActor3D()
+    phi0_label.SetInput("")
+    phi0_label.GetTextProperty().SetFontSize(16)
+    phi0_label.GetTextProperty().SetColor(*_phi0_color)
+    phi0_label.GetTextProperty().SetJustificationToCentered()
+    phi0_label.PickableOff()
+    phi0_label.VisibilityOff()
+    renderer.AddActor(phi0_label)
+
     # --- Scale bar --------------------------------------------------------
     # A small ruler pinned to the bottom-right corner of the viewer showing how
     # long a "nice" round distance is on screen. It is a pure 2D overlay drawn
@@ -856,6 +944,10 @@ def create_server():
             _act.VisibilityOff()
         for _lbl in world_axes_labels:
             _lbl.VisibilityOff()
+        phi0_actor.VisibilityOff()
+        phi0_border_actor.VisibilityOff()
+        phi0_leader_actor.VisibilityOff()
+        phi0_label.VisibilityOff()
 
     def _free_gpu_resources(*mappers):
         """Release cached GPU resources for the given mappers and run a GC pass.
@@ -1549,10 +1641,70 @@ def create_server():
     # tracks the current zoom (same StartEvent hook as the world-axes rescale).
     renderer.AddObserver("StartEvent", _update_scale_bar)
 
+    def _update_phi0_plane():
+        """Draw the phi = 0 reference plane (the Qx-Qz / Qy=0 plane).
+
+        Marks where the diffractometer's phi = 0 sample orientation maps into
+        the reconstructed volume: the world x-z plane at Qy = 0. The quad is
+        extended 20% beyond the volume's Qx and Qz extents so its bright
+        border stays visible even where the opaque volume covers the middle. A
+        "phi = 0" label sits off to the +Qx side and is tied to the plane's
+        corner by a leader line. The z world axis is mirrored in
+        ``_set_volume_data`` (world z = -Qz), so the corners use -Qz.
+        """
+        show = bool(getattr(state, "phi0_show", False))
+        if current_image is None or current_axes is None or not show:
+            phi0_actor.VisibilityOff()
+            phi0_border_actor.VisibilityOff()
+            phi0_leader_actor.VisibilityOff()
+            phi0_label.VisibilityOff()
+            return
+
+        ax_x = np.asarray(current_axes[0], dtype=float)
+        ax_z = np.asarray(current_axes[2], dtype=float)
+        x_lo, x_hi = float(ax_x[0]), float(ax_x[-1])
+        # world z = -Qz (mirrored); normalize to lo/hi regardless of sign.
+        wz_a, wz_b = -float(ax_z[0]), -float(ax_z[-1])
+        z_lo, z_hi = min(wz_a, wz_b), max(wz_a, wz_b)
+        y = 0.0  # Qy = 0 -> the x-z plane
+
+        # Extend the quad beyond the volume so its edges remain visible.
+        span_x = max(x_hi - x_lo, 1e-6)
+        span_z = max(z_hi - z_lo, 1e-6)
+        mx = 0.20 * span_x
+        mz = 0.20 * span_z
+        ex_lo, ex_hi = x_lo - mx, x_hi + mx
+        ez_lo, ez_hi = z_lo - mz, z_hi + mz
+
+        phi0_pts.SetPoint(0, ex_lo, y, ez_lo)
+        phi0_pts.SetPoint(1, ex_hi, y, ez_lo)
+        phi0_pts.SetPoint(2, ex_hi, y, ez_hi)
+        phi0_pts.SetPoint(3, ex_lo, y, ez_hi)
+        phi0_pts.Modified()
+
+        # Label off to the side (beyond the +Qx / top corner), tied back to the
+        # plane's top-right corner by a leader line.
+        anchor = (ex_hi, y, ez_hi)
+        label_pos = (ex_hi + 0.3 * span_x, y, ez_hi + 0.18 * span_z)
+        phi0_leader_pts.SetPoint(0, *anchor)
+        phi0_leader_pts.SetPoint(1, *label_pos)
+        phi0_leader_pts.Modified()
+
+        is_q = (_ensure_path(getattr(state, "space", "q")) or "q").lower() == "q"
+        mid = "Qy" if is_q else "K"
+        phi0_label.SetInput(f"phi = 0  ({mid} = 0)")
+        phi0_label.SetPosition(*label_pos)
+
+        phi0_actor.VisibilityOn()
+        phi0_border_actor.VisibilityOn()
+        phi0_leader_actor.VisibilityOn()
+        phi0_label.SetVisibility(1)
+
     def _update_all_slices():
         try:
             _update_outline_box()
             _update_world_axes()
+            _update_phi0_plane()
             for axis in ("x", "y", "z"):
                 _update_ortho_slice(axis)
             _update_cylinder()
@@ -3098,6 +3250,7 @@ def create_server():
             "outline": outline_actor,
             "coords": outline_label_actors[0] if outline_label_actors else None,
             "world_axes": world_axes_actors[0] if world_axes_actors else None,
+            "phi0": phi0_actor,
             "intensity_map": intensity_actor,
             "roi": roi_outline_actor,
             "cross": cross_actor,
@@ -3129,7 +3282,7 @@ def create_server():
         """List the layers present in the 3D volume view (volume + active slices)."""
         if bool(getattr(state, "intensity_slider_show", False)):
             return  # the intensity view manages its own layer list
-        items = [("volume", "RSM Volume"), ("outline", "Outline Box"), ("coords", "Coordinates"), ("world_axes", "World Axes")]
+        items = [("volume", "RSM Volume"), ("outline", "Outline Box"), ("coords", "Coordinates"), ("world_axes", "World Axes"), ("phi0", "\u03c6 = 0 Plane")]
         for ax, lbl in (("x", "Slice X"), ("y", "Slice Y"), ("z", "Slice Z")):
             if slice_actors[ax].GetVisibility():
                 items.append((f"slice_{ax}", lbl))
@@ -3166,6 +3319,9 @@ def create_server():
         elif key == "world_axes":
             state.world_axes_show = visible
             _update_world_axes()
+        elif key == "phi0":
+            state.phi0_show = visible
+            _update_phi0_plane()
         elif key == "intensity_map":
             intensity_actor.SetVisibility(1 if visible else 0)
         elif key == "roi":
