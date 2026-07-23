@@ -1,219 +1,120 @@
 # Voxel Web Application
 
-A web-based interface for exploring 3D reconstructed reciprocal-space maps (RSMs), built with [Trame](https://kitware.github.io/trame/) and VTK. Reproduces all interactive functionality from the Napari ResView plugin in a browser-accessible single-window application.
+A browser-based tool for reconstructing and exploring 3D reciprocal-space maps
+(RSMs) from diffraction data. Built with [Trame](https://kitware.github.io/trame/)
+and VTK, it reproduces the interactive functionality of the Napari ResView plugin
+in a single-window web app.
 
-## Features
+## What it does
 
-- **Interactive 3D Volume Rendering**: GPU-accelerated volume visualization with real-time rotation, zoom, and panning
-- **Tabbed Accordion Control Panel**: The left panel is organized into four collapsible tabs — **Data**, **Build**, **View**, and **Analyze**
-- **Step-by-Step Pipeline**: Each stage has its own button — Load Data, View Intensity, Crop from ROI, Build RSM, Regrid, View RSM, Refresh, and Stop — so each step can be run and inspected independently
-- **Dual Loader Support**:
-  - **CMS mode**: Load 3D diffraction data from a TIFF directory (with a configurable angle step) without SPEC metadata
-  - **ISR mode**: Load a SPEC file with TIFF intensity frames for comprehensive experimental tracking
-- **Editable Experimental Setup**: Detector distance, pixel pitch, detector height/width (px), beam-center height/width (px), photon energy, and wavelength are populated from the setup file and can be overridden before building (energy and wavelength stay in sync)
-- **Raw Intensity Inspection**: View the loaded detector frames directly as a stacked volume before building the RSM
-- **Flexible Data Space**: Render in Q-space (reciprocal Ångström) or HKL (Miller indices)
-- **Adjustable Visualization Parameters**:
-  - Colormap selection (viridis, plasma, coolwarm, etc.)
-  - Log-intensity toggle and low/high contrast percentile clipping
-  - Rendering mode (composite / maximum-intensity / attenuated MIP)
-  - Shading and lighting properties
-- **ROI-Based Cropping**: Define rectangular crop windows (row/col min-max) on detector images and re-crop the loaded data
-- **Analysis Slicing**: Orthogonal (X/Y/Z) plane slices plus cylindrical and spherical surface sampling (Q-space) with per-slice opacity and colormap
-- **3D Regridding**: Scatter-to-grid interpolation using xrayutilities for uniform 3D volumes
-- **Export Capabilities**: Save reconstructed volumes as VTK XML RectilinearGrid (.vtr) format
+You load detector data, build a reciprocal-space map, regrid it into a uniform
+volume, and inspect the result with GPU-accelerated 3D rendering and slicing —
+all from a browser.
+
+The left panel is a four-tab accordion that follows the pipeline:
+
+- **Data** — load and prepare
+  - Two loaders: **CMS** (TIFF directory + angle step, no SPEC metadata) or
+    **ISR** (SPEC file + TIFF frames)
+  - Server-side file browser for picking paths
+  - Editable experimental setup (detector distance, pixel pitch, detector
+    size, beam center, energy/wavelength — energy and wavelength stay in sync)
+    populated from a YAML setup file
+  - **View Intensity** to inspect raw detector frames before building
+  - **ROI crop** (row/col min-max) to re-crop the loaded data
+- **Build** — compute the Q/HKL mapping (**Build RSM**), then scatter it into a
+  uniform 3D grid (**Regrid**, via xrayutilities)
+- **View** — render the volume (**View RSM**) in Q-space (Å⁻¹) or HKL, with
+  colormap, log-intensity, contrast percentiles, and rendering mode
+  (composite / MIP / attenuated MIP); export to VTK `.vtr`
+- **Analyze** — orthogonal X/Y/Z plane slices plus cylindrical and spherical
+  surface sampling, each with adjustable position, **tilt**, opacity, and
+  colormap; optional **φ=0 reference plane** marking the diffractometer origin
+
+Each pipeline step is its own button, so any stage can be run and inspected
+independently. A **Stop** button cancels a running load/build/regrid.
 
 ## Requirements
 
-- Python 3.11+ (due to `from __future__ import annotations` in Trame)
+- Python 3.11+
 - [Pixi](https://pixi.sh) for environment management
 
-## Installation
-
-The environment is defined in `pixi.toml`. Install all dependencies with:
+## Install
 
 ```bash
 pixi install
 ```
 
-This creates a managed environment in `.pixi/` with the correct Python version and all packages.
+This creates a managed environment in `.pixi/` with the correct Python version
+and all packages (declared in `pixi.toml`, resolved from conda-forge).
 
-### Dependencies
-
-- **Core**: trame, trame-vtk, vtk, numpy, scipy
-- **Scientific**: xrayutilities, pandas, pyyaml
-- **Data I/O**: tifffile, h5py, dask
-- **Visualization**: matplotlib, scikit-image, lmfit
-
-All packages are declared in `pixi.toml` and resolved from conda-forge.
-
-## Running the Web App
-
-### Launch with Default Settings
+## Run
 
 ```bash
-pixi run start
+pixi run start          # or: pixi run python -m voxel
 ```
 
-or equivalently:
+The server picks an available port, prints it, and opens the browser.
+
+Options (`pixi run python -m voxel --help`):
+
+- `--port PORT` — bind a specific port (default: auto)
+- `--host HOST` — bind a specific host (default: localhost)
+- `--no-browser` — don't open the browser
 
 ```bash
-pixi run python -m voxel
-```
-
-The server will:
-1. Start on `localhost` (by default)
-2. Assign an available port (printed to console)
-3. Automatically open the browser
-
-### Command-Line Options
-
-```bash
-pixi run python -m voxel --help
-```
-
-Options:
-- `--port PORT`: Bind to a specific port (default: 0 = auto)
-- `--host HOST`: Bind to a specific host address (default: localhost)
-- `--no-browser`: Do not open the browser automatically
-
-### Example Launches
-
-```bash
-# Run on port 8080, accessible from any interface
 pixi run python -m voxel --port 8080 --host 0.0.0.0
-
-# Run on localhost without opening browser
-pixi run python -m voxel --no-browser
 ```
 
-## Usage Workflow
+## Typical workflow
 
-### 1. Data tab — load and prepare
+1. **Data**: pick CMS or ISR, provide paths, review/override the setup fields,
+   then **Load Data**. Optionally **View Intensity** or **Crop from ROI**.
+2. **Build**: **Build RSM**, then **Regrid**.
+3. **View**: **View RSM**, adjust colormap / log / contrast / mode, **Refresh**,
+   and export to `.vtr`.
+4. **Analyze**: toggle slices and surfaces; adjust position, tilt, opacity, and
+   colormap.
 
-1. **Select Loader Mode**: CMS or ISR
-2. **Provide Paths** (via the server-side file browser):
-   - **TIFF Directory**: folder containing detector images (required)
-   - **YAML Setup**: experiment configuration file
-   - **SPEC File**: ISR mode only
-   - **Angle Step**: CMS mode only
-3. (Optional) Review/override the range of scans to load and **Experimental Setup** fields (distance, pitch,
-   detector height/width, beam-center height/width, energy, wavelength).
-4. Click **Load Data** (loads data only; no rendering yet).
-5. (Optional) Click **View Intensity** to inspect the raw detector frames.
-6. (Optional) Enter crop bounds (row/col min-max) and click **Crop from ROI** to
-   re-crop the loaded data (a rebuild is required afterward).
+**3D view controls**: left drag to rotate, wheel or right drag to zoom, middle
+drag to pan.
 
-### 2. Build tab — compute the RSM
+## Architecture
 
-1. Click **Build RSM** to compute the Q/HKL mapping.
-2. Click **Regrid** to scatter the cloud into a uniform 3D volume.
+Launched as a package module: `python -m voxel`
+([voxel/__main__.py](voxel/__main__.py) → [voxel/cli.py](voxel/cli.py) →
+`run_server()` in [voxel/app/server.py](voxel/app/server.py)).
 
-### 3. View tab — render and export
+Code is split by concern so new loaders, reconstruction methods, or
+visualizations can be added in isolation:
 
-1. Click **View RSM** to display the regridded volume.
-2. Adjust **Log view**, **colormap**, **rendering mode**, and **low/high contrast
-   percentiles**, then click **Refresh** to re-apply.
-3. Click **Stop** to cancel a running load/build/regrid task.
-4. Set the **Export Path** (.vtr) and use the export control to save.
+- `voxel/services` — data access (`backend.py` bridges the headless `rsm3d`
+  loaders/builder; `parsing.py` coerces browser state into typed values;
+  `tiled_io.py` provides a Tiled-based loader)
+- `voxel/rsm3d` — the reconstruction engine (loaders, `RSMBuilder`, VTR export)
+- `voxel/visualization` — VTK color/opacity transfer functions and percentile
+  helpers
+- `voxel/ui` — static UI assets (colormap names, icons)
+- `voxel/app/server.py` — builds the Trame server, the VTK scene, and the
+  per-step controllers (load, view intensity, crop, build, regrid, view,
+  refresh, stop, slicing, export)
 
-### 4. Analyze tab — slicing
-
-- Toggle **orthogonal** X/Y/Z plane slices and adjust their position, opacity,
-  and colormap.
-- Toggle **cylindrical** and **spherical** surface sampling (Q-space) and adjust
-  radius, sample count, opacity, and colormap.
-
-### Interacting with the 3D view
-
-- **Rotate**: Left mouse drag
-- **Zoom**: Mouse wheel or right drag
-- **Pan**: Middle mouse drag
-
-## Application Architecture
-
-### Entry points
-The application is launched as a package module:
-
-- `python -m voxel` — package entry ([voxel/__main__.py](voxel/__main__.py) → [voxel/cli.py](voxel/cli.py))
-- `pixi run start` — the pixi task (runs `python -m voxel`)
-
-The CLI argument parsing lives in [voxel/cli.py](voxel/cli.py); it calls
-`run_server()` in [voxel/app/server.py](voxel/app/server.py).
-
-### Package layout (`voxel/`)
-The application is split by concern so new data types, reconstruction methods,
-or visualization capabilities can be added in isolation:
-
-
-- **`voxel/services`** — data access and state coercion:
-  - `backend.py`: bridge that imports the headless `rsm3d` loaders/builder and
-    resolves the defaults YAML path (`yaml_path`)
-  - `parsing.py`: pure helpers that turn browser state into typed values
-    (scan lists, UB matrix, goniometer axes, grid shape) plus the crop helpers
-- **`voxel/rsm3d`** — the reconstruction engine (STAGE 2), unchanged
-- **`voxel/visualization`** — render helpers:
-  - `colormaps.py`: `vtkColorTransferFunction` / `vtkPiecewiseFunction` /
-    `vtkLookupTable` builders, log-compression, and robust-percentile utilities
-- **`voxel/ui`** — static UI assets:
-  - `assets.py`: `COLORMAP_NAMES`, layer-toggle SVG icons, `DEFAULT_FRAME_COUNT`
-- **`voxel/app`** — orchestration (STAGE 3):
-  - `server.py`: `create_server()` builds the Trame server, the VTK scene, and
-    the per-step controllers (`load_data`, `view_intensity`, `crop_from_roi`,
-    `build_rsm`, `regrid`, `view_rsm`, `refresh_rendering`, `stop_task`,
-    `update_slices`, `export_vtr`); `run_server()` starts it
-
-### Integration with `napari_resview`
-- **Loaders**: `RSMDataLoader_ISR`, `RSMDataloader_CMS` – load experimental data
-- **Builder**: `RSMBuilder` – compute Q/HKL mappings and 3D regridding
-- **Export**: `write_rsm_volume_to_vtr` – save results to VTK format
-
-## Technical Details
-
-### Python Environment
-- Uses the Pixi-managed environment in `.pixi/envs/default` (Python 3.11)
-- Dynamically creates the `napari_resview` package namespace to import the backend modules without a Napari dependency
-
-### VTK Rendering
-- **vtkSmartVolumeMapper**: GPU-accelerated volume rendering (composite / MIP / attenuated MIP)
-- **vtkImageData**: Regular grid representation of 3D RSM volumes
-- **vtkImageResliceMapper / vtkImageSlice**: Orthogonal plane slicing in the Analysis tab
-- **vtkCylinderSource / vtkSphereSource + vtkProbeFilter**: Cylindrical and spherical surface sampling
-- **vtkLookupTable**: Maps scalar values to colors for slice surfaces
-- **Trame VtkRemoteView**: Streams off-screen rendered frames to the browser client
-
-### Trame UI
-- **DivLayout**: Simple HTML container layout
-- **Accordion control panel**: Four stacked tabs (Data / Build / View / Analysis), each a header bar plus a `v_show`-gated panel; only one tab is open at a time
-- **html widgets**: Lightweight interactive controls (inputs, selects, buttons, checkboxes)
-- **State binding**: Two-way synchronization between UI controls and server state
-- **Controllers**: Server-side handlers for each pipeline step (load, build, regrid, view, slicing, export)
+The backend is imported headlessly (a lightweight `rsm3d` namespace) so no
+Napari/Qt dependency is required to run the web app.
 
 ## Troubleshooting
 
-### App Won't Start
-- Ensure the Pixi environment is installed: `pixi install`
-- Check Python version: `pixi run python --version` should show 3.11.x
-- Verify imports: `pixi run python -c "from voxel.app.server import create_server; print('OK')"`
-
-### Data Load Fails
-- Verify file paths are absolute and correct
-- Check YAML file format (must contain `ExperimentSetup` section with required keys)
-- Ensure TIFF directory contains valid .tif or .tiff files
-- For ISR mode, verify SPEC file is accessible
-
-### Rendering Issues
-- Ensure VTK display is available (SSH with -X for remote sessions)
-- Check grid size is reasonable (16–256; very large grids may timeout)
-- If regridding hangs, try smaller grid size or shorter axis ranges
-
-## Future Improvements (Deferred)
-
-- **Performance**: Async/streamed loading for large datasets, caching strategies
-- **Export Formats**: FITS, NetCDF, raw binary alongside VTR
+- **Won't start**: run `pixi install`; confirm `pixi run python --version` shows
+  3.11.x; verify with
+  `pixi run python -c "from voxel.app.server import create_server; print('OK')"`.
+- **Load fails**: use absolute paths; ensure the YAML has an `ExperimentSetup`
+  section; confirm the TIFF directory has valid `.tif`/`.tiff` files; for ISR,
+  check the SPEC file is accessible.
+- **Rendering issues**: ensure a VTK display is available (SSH `-X` for remote);
+  keep grid size reasonable (16–256) — very large grids may time out.
 
 ## References
 
-- [Trame Documentation](https://trame.readthedocs.io/)
-- [VTK Python Bindings](https://vtk.org/doc/nightly/html/python/)
+- [Trame](https://trame.readthedocs.io/)
+- [VTK Python](https://vtk.org/doc/nightly/html/python/)
 - [xrayutilities](https://sourceforge.net/projects/xrayutilities/)
