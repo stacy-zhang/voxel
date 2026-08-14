@@ -106,12 +106,11 @@ def create_tomo_server():
     ######
     # UI #
     ######
-    # Placeholder workflow dropdown menus shown on the top header bar.
     workflow_menus = [
         ("File", ["Option 1", "Option 2", "Option 3"]),
+        ("Data Transforms", ["Option !", "Option @", "Option #"]),
         ("Tomography", ["Option A", "Option B", "Option C"]),
         ("Visualization", ["Option X", "Option Y", "Option Z"]),
-        ("Menu 4", ["Option !", "Option @", "Option #"]),
     ]
 
     with SinglePageWithDrawerLayout(server) as layout:
@@ -136,7 +135,7 @@ def create_tomo_server():
             drawer.width = 360
 
             with html.Div(classes="d-flex flex-column fill-height"):
-                with v3.VCard(flat=True, classes="d-flex flex-column", style=("`flex: ${drawer_split} 1 0px`",)):
+                with v3.VCard(flat=True, classes="d-flex flex-column mt-2", style=("`flex: ${drawer_split} 1 0px`",)):
                     v3.VCardTitle("Pipeline", classes="text-h6 font-weight-regular")
                 # draggable divider for resizing drawer sections
                 html.Div(
