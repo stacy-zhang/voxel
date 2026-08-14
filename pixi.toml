@@ -7,6 +7,7 @@ platforms = ["linux-64"]
 
 [tasks]
 start = "python -m voxel"
+tomo = "python -m voxel.features.tomo"
 test-imports = "python tests/test_import_isolation.py"
 
 [dependencies]
