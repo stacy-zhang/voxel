@@ -19,20 +19,20 @@ from trame.app import get_server # Trame server framework
 from trame.ui.vuetify3 import SinglePageWithDrawerLayout 
 from trame.widgets import vuetify3 as vuetify, vtk as vtk_widgets, html
 
-# CLI
-parser = argparse.ArgumentParser(description="Tomography Web Application using Trame")
-parser.add_argument("--port", type=int, default=0, help="Port to bind the Trame server (0 = auto)")
-parser.add_argument("--host", type=str, default="localhost", help="Host to run the server on (default: localhost)")
-parser.add_argument("--open-browser", action="store_true", help="Open the browser on server start")
-
 
 def create_tomo_server():
     server = get_server(name="tomo_app")
     
     return server
 
+def run_server(port=0, host="localhost", open_browser=True):
+    create_tomo_server().start(port=port, host=host, open_browser=open_browser)
 
-if __name__ == "__main__":
-    args = parser.parse_args()
-    server = create_tomo_server()
-    server.start(port=args.port, host=args.host, open_browser=args.open_browser)
+def main(argv=None):
+    # CLI
+    parser = argparse.ArgumentParser(description="Tomography Web Application using Trame")
+    parser.add_argument("--port", type=int, default=0, help="Port to bind the Trame server (0 = auto)")
+    parser.add_argument("--host", type=str, default="localhost", help="Host to run the server on (default: localhost)")
+    parser.add_argument("--no-browser", action="store_true")
+    args = parser.parse_args(argv)
+    run_server(port=args.port, host=args.host, open_browser=not args.no_browser)
