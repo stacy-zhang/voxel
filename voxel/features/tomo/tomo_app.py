@@ -93,6 +93,8 @@ def create_tomo_server():
     server = get_server(name="tomo_app")
     state, ctrl = server.state, server.controller
 
+    state.drawer_split = 0.5  # fraction of drawer height given to the Pipeline section
+
     ###########
     # helpers #
     ###########
@@ -104,17 +106,54 @@ def create_tomo_server():
     ######
     # UI #
     ######
+    # Placeholder workflow dropdown menus shown on the top header bar.
+    workflow_menus = [
+        ("File", ["Option 1", "Option 2", "Option 3"]),
+        ("Tomography", ["Option A", "Option B", "Option C"]),
+        ("Visualization", ["Option X", "Option Y", "Option Z"]),
+        ("Menu 4", ["Option !", "Option @", "Option #"]),
+    ]
+
     with SinglePageWithDrawerLayout(server) as layout:
         layout.title.set_text("Tomography Viewer")
+
+        with layout.toolbar:
+            v3.VSpacer()
+            for menu_title, options in workflow_menus:
+                with v3.VMenu(open_on_hover=True, location="bottom end", viewport_margin=0):
+                    with v3.Template(v_slot_activator="{ props }"):
+                        v3.VBtn(
+                            menu_title,
+                            v_bind="props",
+                            variant="text",
+                            append_icon="mdi-chevron-down",
+                        )
+                    with v3.VList(density="compact"):
+                        for option in options:
+                            v3.VListItem(title=option)
+
         with layout.drawer as drawer:
             drawer.width = 360
 
-            with v3.VCard(flat=True, classes="mt-5 pb-4"):
-                v3.VCardTitle("Pipeline", classes="text-h6 font-weight-regular")
-            v3.VDivider()
-            with v3.VCard(flat=True, classes="mt-4 pb-4"):
-                v3.VCardTitle("Properties", classes="text-h6 font-weight-regular")
-            v3.VDivider()
+            with html.Div(classes="d-flex flex-column fill-height"):
+                with v3.VCard(flat=True, classes="d-flex flex-column", style=("`flex: ${drawer_split} 1 0px`",)):
+                    v3.VCardTitle("Pipeline", classes="text-h6 font-weight-regular")
+                # draggable divider for resizing drawer sections
+                html.Div(
+                    v3.VIcon(icon="mdi-drag-horizontal", size=18, classes="mx-auto"),
+                    classes="flex-shrink-0",
+                    style="height: 5px; cursor: row-resize; touch-action: none; "
+                    "background-color: rgba(0,0,0,0.12);",
+                    __events=["pointerdown", "pointermove", "pointerup"],
+                    pointerdown="$event.target.setPointerCapture($event.pointerId)",
+                    pointermove=(
+                        "$event.buttons===1 && (drawer_split = Math.min(0.9, Math.max(0.1, "
+                        "($event.clientY - $event.currentTarget.parentNode.getBoundingClientRect().top) "
+                        "/ $event.currentTarget.parentNode.getBoundingClientRect().height)))"
+                    ),
+                )
+                with v3.VCard(flat=True, classes="d-flex flex-column", style=("`flex: ${1 - drawer_split} 1 0px`",)):
+                    v3.VCardTitle("Properties", classes="text-h6 font-weight-regular")
 
         with layout.content:
             with v3.VContainer(fluid=True, classes="pa-0 fill-height"):
