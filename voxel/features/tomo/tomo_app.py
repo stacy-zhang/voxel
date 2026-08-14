@@ -17,6 +17,7 @@ import numpy as np
 
 from trame.app import get_server # Trame server framework
 from trame.ui.vuetify3 import SinglePageWithDrawerLayout 
+from trame.ui.vuetify3 import SinglePageLayout 
 from trame.widgets import vuetify3 as v3, vtk as vtk_widgets, html
 
 from vtkmodules.vtkCommonDataModel import (
@@ -108,12 +109,14 @@ def create_tomo_server():
         with layout.drawer as drawer:
             drawer.width = 360
 
-            with v3.VCard(flat=True, classes="mt-4"):
-                v3.VCardTitle("Data", classes="text-subtitle-1")
-
+            with v3.VCard(flat=True, classes="mt-5 pb-4"):
+                v3.VCardTitle("Pipeline", classes="text-h6 font-weight-regular")
+            v3.VDivider()
+            with v3.VCard(flat=True, classes="mt-4 pb-4"):
+                v3.VCardTitle("Properties", classes="text-h6 font-weight-regular")
             v3.VDivider()
 
-    with layout.content:
+        with layout.content:
             with v3.VContainer(fluid=True, classes="pa-0 fill-height"):
                 view = vtk_widgets.VtkRemoteView(
                     render_window,
@@ -123,7 +126,7 @@ def create_tomo_server():
                 )
                 ctrl.view_update = view.update
                 ctrl.view_reset_camera = view.reset_camera
-    
+
     return server
 
 def run_server(port=0, host="localhost", open_browser=True):
