@@ -525,6 +525,8 @@ def create_tomo_server():
         ("Visualization", ["Volume", "Outline", "Slice", "Contour"]),
     ]
 
+    option_funcs = {"Open Data": ctrl.open_browser}
+
     with SinglePageWithDrawerLayout(server) as layout:
         layout.title.set_text("Tomography Viewer")
 
@@ -543,7 +545,7 @@ def create_tomo_server():
                         for option in options:
                             v3.VListItem(
                                 title=option,
-                                click=ctrl.open_browser,
+                                click=option_funcs.get(option),
                             )
 
         with layout.drawer as drawer:
