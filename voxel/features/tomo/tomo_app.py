@@ -328,7 +328,7 @@ def create_tomo_server():
 
 
     def _setup_transfer_functions(data_range):
-        global _data_range
+        nonlocal _data_range
         lo, hi = data_range
         if hi <= lo:
             hi = lo + 1.0
@@ -365,7 +365,7 @@ def create_tomo_server():
             _view_update()
             return
 
-        global _active_reader
+        nonlocal _active_reader
         try:
             reader = vtkTIFFReader()
             reader.SetFileName(str(resolved))
@@ -389,7 +389,7 @@ def create_tomo_server():
             outline_actor.SetVisibility(bool(state.show_outline))
 
             # Store bounds and reset slice fractions
-            global _volume_bounds
+            nonlocal _volume_bounds
             _volume_bounds = image.GetBounds()  # (xmin,xmax,ymin,ymax,zmin,zmax)
             state.slice_x_min = 0.0
             state.slice_x_max = 1.0
@@ -511,6 +511,55 @@ def create_tomo_server():
     ctrl.browser_confirm = browser_confirm
     ctrl.browser_cancel = browser_cancel
 
+    # Opacity preset curves
+    _OPACITY_PRESETS = {
+        "linear": [
+            {"x": 0.0, "y": 0.0},
+            {"x": 1.0, "y": 1.0},
+        ],
+        "ramp_up": [
+            {"x": 0.0, "y": 0.0},
+            {"x": 0.10, "y": 0.0},
+            {"x": 0.40, "y": 0.05},
+            {"x": 0.70, "y": 0.25},
+            {"x": 1.0,  "y": 0.80},
+        ],
+        "ramp_down": [
+            {"x": 0.0, "y": 0.80},
+            {"x": 0.30, "y": 0.25},
+            {"x": 0.60, "y": 0.05},
+            {"x": 0.90, "y": 0.0},
+            {"x": 1.0,  "y": 0.0},
+        ],
+        "tent": [
+            {"x": 0.0, "y": 0.0},
+            {"x": 0.50, "y": 1.0},
+            {"x": 1.0,  "y": 0.0},
+        ],
+        "s_curve": [
+            {"x": 0.0,  "y": 0.0},
+            {"x": 0.15, "y": 0.01},
+            {"x": 0.30, "y": 0.05},
+            {"x": 0.50, "y": 0.50},
+            {"x": 0.70, "y": 0.95},
+            {"x": 0.85, "y": 0.99},
+            {"x": 1.0,  "y": 1.0},
+        ],
+        "flat": [
+            {"x": 0.0, "y": 0.5},
+            {"x": 1.0, "y": 0.5},
+        ],
+    }
+
+    def set_opacity_preset(preset_name: str):
+        """Apply an opacity-curve preset by name."""
+        pts = _OPACITY_PRESETS.get(preset_name)
+        if pts is not None:
+            state.opacity_points = [dict(p) for p in pts]
+
+    ctrl.set_opacity_preset = set_opacity_preset
+
+
     ##########################
     # @state.change handlers #
     ##########################
@@ -521,7 +570,7 @@ def create_tomo_server():
     workflow_menus = [
         ("File", ["Open Data", "Save Data", "Export"]),
         ("Data Transforms", ["Data Management", "Volume Manipulation", "Math Operations", "Filters"]),
-        ("Tomography", ["Pre-processing", "Alignment", "Reconstruction", "Simulation & Demonstrations"]),
+        ("Tomography", ["Mark Data as Volume", "Mark Data as Tilt Series", "Set Tilt Angles", "Pre-processing", "Alignment", "Reconstruction", "Simulation & Demonstrations"]),
         ("Visualization", ["Volume", "Outline", "Slice", "Contour"]),
     ]
 
@@ -571,6 +620,7 @@ def create_tomo_server():
                 with v3.VCard(flat=True, classes="d-flex flex-column", style=("`flex: ${1 - drawer_split} 1 0px`",)):
                     v3.VCardTitle("Properties", classes="text-h6 font-weight-regular")
 
+        # main 3D view area
         with layout.content:
             with v3.VContainer(fluid=True, classes="pa-0 fill-height"):
                 view = vtk_widgets.VtkRemoteView(
@@ -581,8 +631,8 @@ def create_tomo_server():
                 )
                 ctrl.view_update = view.update
                 ctrl.view_reset_camera = view.reset_camera
-    
-        # ---- file-browser dialog (rendered once, toggled via state) ----
+
+        # file browser dialog
         with v3.VDialog(
             v_model=("browser_open",),
             max_width=700,
