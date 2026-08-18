@@ -35,3 +35,4 @@ Dockerfile
 .dockerignore
 
 tomo_viewer.py
+tomo_notes.txt
