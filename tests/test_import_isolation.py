@@ -27,13 +27,21 @@ CLEAN_MODULES = [
     "voxel.app.server",
 ]
 
+# Modules that MUST NOT import tomopy at import time. The tomography numeric
+# pipeline wraps TomoPy but lazy-imports it *inside* each operator, so importing
+# the module (as the shared surface may) never pulls TomoPy's heavy stack -- and
+# it stays importable even where TomoPy is not installed (the dev/pixi env).
+TOMOPY_CLEAN_MODULES = [
+    "voxel.features.tomo.pipeline",
+]
 
-def _imports_xrayutilities(module: str) -> bool:
-    """True if importing ``module`` in a fresh interpreter pulls in xrayutilities."""
+
+def _imports_dep(module: str, dep: str) -> bool:
+    """True if importing ``module`` in a fresh interpreter pulls in ``dep``."""
     code = (
         "import importlib, sys;"
         f"importlib.import_module({module!r});"
-        "print('xrayutilities' in sys.modules)"
+        f"print({dep!r} in sys.modules)"
     )
     proc = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True
@@ -41,6 +49,11 @@ def _imports_xrayutilities(module: str) -> bool:
     assert proc.returncode == 0, f"importing {module} failed:\n{proc.stderr}"
     # The last stdout line is the boolean; earlier lines may be env warnings.
     return proc.stdout.strip().splitlines()[-1] == "True"
+
+
+def _imports_xrayutilities(module: str) -> bool:
+    """True if importing ``module`` in a fresh interpreter pulls in xrayutilities."""
+    return _imports_dep(module, "xrayutilities")
 
 
 def test_shared_surface_is_xrayutilities_free():
@@ -51,6 +64,16 @@ def test_shared_surface_is_xrayutilities_free():
     )
 
 
+def test_tomo_pipeline_is_tomopy_free():
+    offenders = [m for m in TOMOPY_CLEAN_MODULES if _imports_dep(m, "tomopy")]
+    assert not offenders, (
+        "these modules pull in tomopy at import time (TomoPy must be lazy-imported "
+        "inside operators instead): " + ", ".join(offenders)
+    )
+
+
 if __name__ == "__main__":
     test_shared_surface_is_xrayutilities_free()
     print("OK: shared surface is xrayutilities-free")
+    test_tomo_pipeline_is_tomopy_free()
+    print("OK: tomo pipeline is tomopy-free at import")
