@@ -40,8 +40,11 @@ from vtkmodules.vtkRenderingCore import (
     vtkRenderWindowInteractor, # handles user interaction (mouse, keyboard) with the render window
     vtkVolume, # the actor type for volume rendering
     vtkVolumeProperty, # holds the properties of the volume rendering (color, opacity, shading, etc.)
+    vtkImageSlice,
 )
 from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper # the GPU-accelerated volume mapper that does the actual rendering of the 3D data
+from vtkmodules.vtkRenderingImage import vtkImageResliceMapper # maps a 3D volume to a 2D slice plane
+from vtkmodules.util import numpy_support
 
 from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera # allows the user to rotate/zoom/pan the view with mouse interactions (trackball style)
 import vtkmodules.vtkInteractionStyle  # noqa – required
@@ -88,6 +91,19 @@ def create_tomo_server():
     volume_actor.SetProperty(vol_property)
     volume_actor.VisibilityOff() # start with volume hidden until a file is loaded
     renderer.AddVolume(volume_actor)
+
+    slice_actors = {}
+    slice_mappers = {}
+    for axis in ("x", "y", "z"):
+        mapper = vtkImageResliceMapper()
+        mapper.SliceFacesCameraOff()
+        mapper.SliceAtFocalPointOff()
+        actor = vtkImageSlice()
+        actor.SetMapper(mapper)
+        actor.VisibilityOff()
+        renderer.AddViewProp(actor)
+        slice_mappers[axis] = mapper
+        slice_actors[axis] = actor
 
     # Clipping planes for axis-aligned slicing (6 planes: +X, -X, +Y, -Y, +Z, -Z)
     clip_planes = {}
@@ -273,14 +289,12 @@ def create_tomo_server():
         if callable(fn):
             fn()
 
-
     def _snapshot_opacity():
         _baseline_opacity.clear()
         buf = [0.0, 0.0, 0.0, 0.0]
         for i in range(opacity_tf.GetSize()):
             opacity_tf.GetNodeValue(i, buf)
             _baseline_opacity.append(tuple(buf))
-
 
     def _apply_opacity_scale(scale: float):
         if not _baseline_opacity:
@@ -289,7 +303,6 @@ def create_tomo_server():
         for x, y, m, s in _baseline_opacity:
             new_tf.AddPoint(x, max(0.0, min(y * scale, 1.0)), m, s)
         vol_property.SetScalarOpacity(new_tf)
-
 
     def _apply_colormap():
         """Rebuild the colour transfer function from current state."""
@@ -312,7 +325,6 @@ def create_tomo_server():
         for frac, r, g, b in nodes:
             color_tf.AddRGBPoint(c_lo + frac * c_span, r, g, b)
 
-
     def _apply_opacity_from_points():
         """Rebuild opacity TF from the control points stored in state."""
         lo, hi = _data_range
@@ -325,7 +337,6 @@ def create_tomo_server():
 
         _snapshot_opacity()
         _apply_opacity_scale(float(state.opacity_scale))
-
 
     def _setup_transfer_functions(data_range):
         nonlocal _data_range
@@ -349,7 +360,6 @@ def create_tomo_server():
 
         _apply_colormap()
         _apply_opacity_from_points()
-
 
     def load_tiff(path_str: str):
         """Read a 3-D TIFF and feed it into the volume pipeline."""
@@ -411,7 +421,6 @@ def create_tomo_server():
             state.loaded = False
 
         _view_update()
-
 
     # file browser helpers
     def _list_directory(directory: str) -> list[dict]:
@@ -563,6 +572,75 @@ def create_tomo_server():
     ##########################
     # @state.change handlers #
     ##########################
+    @state.change("opacity_scale")
+    def _on_opacity(opacity_scale, **_kw):
+        try:
+            _apply_opacity_scale(float(opacity_scale))
+        except (TypeError, ValueError):
+            pass
+        _view_update()
+
+    @state.change("shade")
+    def _on_shade(shade, **_kw):
+        vol_property.SetShade(bool(shade))
+        _view_update()
+
+    @state.change("show_outline")
+    def _on_outline(show_outline, **_kw):
+        outline_actor.SetVisibility(bool(show_outline))
+        _view_update()
+
+    @state.change("slice_x_min", "slice_x_max",
+                "slice_y_min", "slice_y_max",
+                "slice_z_min", "slice_z_max")
+    def _on_slice(**_kw):
+        _update_clip_planes()
+        _view_update()
+
+    @state.change("colormap")
+    def _on_colormap(colormap, **_kw):
+        state.colormap_preview = COLORMAP_PREVIEWS.get(colormap, "")
+        _apply_colormap()
+        _view_update()
+
+    @state.change("contrast_low", "contrast_high")
+    def _on_contrast(contrast_low, contrast_high, **_kw):
+        _apply_colormap()
+        _view_update()
+
+    @state.change("opacity_points")
+    def _on_opacity_points(opacity_points, **_kw):
+        _apply_opacity_from_points()
+        _view_update()
+
+    @state.change("blend_mode")
+    def _on_blend_mode(blend_mode, **_kw):
+        mode = int(blend_mode)
+        if mode == 0:
+            volume_mapper.SetBlendModeToComposite()
+        elif mode == 1:
+            volume_mapper.SetBlendModeToMaximumIntensity()
+        elif mode == 2:
+            volume_mapper.SetBlendModeToMinimumIntensity()
+        elif mode == 3:
+            volume_mapper.SetBlendModeToAverageIntensity()
+        _view_update()
+
+    @state.change("ambient")
+    def _on_ambient(ambient, **_kw):
+        vol_property.SetAmbient(float(ambient))
+        _view_update()
+
+    @state.change("diffuse")
+    def _on_diffuse(diffuse, **_kw):
+        vol_property.SetDiffuse(float(diffuse))
+        _view_update()
+
+    @state.change("specular")
+    def _on_specular(specular, **_kw):
+        vol_property.SetSpecular(float(specular))
+        _view_update()
+
 
     ######
     # UI #
@@ -571,7 +649,7 @@ def create_tomo_server():
         ("File", ["Open Data", "Save Data", "Export"]),
         ("Data Transforms", ["Data Management", "Volume Manipulation", "Math Operations", "Filters"]),
         ("Tomography", ["Mark Data as Volume", "Mark Data as Tilt Series", "Set Tilt Angles", "Pre-processing", "Alignment", "Reconstruction", "Simulation & Demonstrations"]),
-        ("Visualization", ["Volume", "Outline", "Slice", "Contour"]),
+        ("Visualization", ["Volume", "Outline", "Slice", "Contour", "Threshold", "Clip", "Ruler", "Scale Cube"]),
     ]
 
     option_funcs = {"Open Data": ctrl.open_browser}
