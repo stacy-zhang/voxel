@@ -493,7 +493,7 @@ def build_tabs(ctx, include_menu=True):
 
     with v3.VExpansionPanels(v_model=("open_tab",), variant="accordion"):
         with v3.VExpansionPanel(value="pipeline"):
-            v3.VExpansionPanelTitle("Pipeline", classes="mt-2")
+            v3.VExpansionPanelTitle("Pipeline")
             with v3.VExpansionPanelText():
                 _pipeline_body(ctx)
         with v3.VExpansionPanel(value="properties"):
