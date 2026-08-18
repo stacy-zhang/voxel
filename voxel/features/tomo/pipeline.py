@@ -447,18 +447,15 @@ def apply_op(data: TomoData, op_id: str, params: dict) -> TomoData:
 def run_pipeline(
     data: TomoData,
     blocks: list,
-    set_status: Optional[Callable[[str], None]] = None,
 ) -> TomoData:
     """Run the enabled numeric blocks top-to-bottom, threading ``data``.
 
     ``blocks`` are the pipeline block dicts ``{id, op, label, params, enabled}``
     from the UI. Blocks that are disabled, or whose ``op`` is not a numeric
-    transform, are skipped. Errors are surfaced through ``set_status`` (if given)
-    and re-raised so the caller can decide how to report them.
+    transform, are skipped.
     """
     def _log(msg: str) -> None:
-        if set_status is not None:
-            set_status(msg)
+        pass
 
     for block in blocks:
         if not block.get("enabled", True):

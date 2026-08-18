@@ -119,128 +119,150 @@ DATA_TRANSFORM_OPS = [
     },
 ]
 
-TOMOGRAPHY_OPS = [
-    # -- Pre-processing --
-    {
-        "id": "normalize",
-        "label": "Normalize (dark/flat)",
-        "params": [
-            {"name": "cutoff", "label": "Cutoff (blank = none)", "type": "number", "default": ""},
-        ],
-    },
-    {
-        "id": "normalize_bg",
-        "label": "Background normalize",
-        "params": [
-            {"name": "air", "label": "Air pixels", "type": "int", "default": 1},
-        ],
-    },
-    {"id": "minus_log", "label": "Minus log (\u2212log)", "params": []},
-    {
-        "id": "remove_stripe",
-        "label": "Ring removal (stripe)",
-        "params": [
-            {"name": "level", "label": "Level (blank = auto)", "type": "int", "default": ""},
-            {"name": "wname", "label": "Wavelet", "type": "text", "default": "db5"},
-            {"name": "sigma", "label": "Sigma", "type": "number", "default": 2.0},
-        ],
-    },
-    {
-        "id": "retrieve_phase",
-        "label": "Phase retrieval (Paganin)",
-        "params": [
-            {"name": "pixel_size", "label": "Pixel size (cm)", "type": "number", "default": 1e-4},
-            {"name": "dist", "label": "Propagation dist (cm)", "type": "number", "default": 50.0},
-            {"name": "energy", "label": "Energy (keV)", "type": "number", "default": 20.0},
-            {"name": "alpha", "label": "Regularization \u03b1", "type": "number", "default": 1e-3},
-        ],
-    },
-    # -- Angles --
-    {
-        "id": "set_angles",
-        "label": "Set tilt angles",
-        "params": [
-            {"name": "ang1", "label": "Start angle (deg)", "type": "number", "default": 0.0},
-            {"name": "ang2", "label": "Stop angle (deg)", "type": "number", "default": 180.0},
-        ],
-    },
-    # -- Alignment --
-    {"id": "align_seq", "label": "Auto-align (sequential)", "params": _ALIGN_PARAMS},
-    {"id": "align_joint", "label": "Auto-align (joint)", "params": _ALIGN_PARAMS},
-    {
-        "id": "shift_images",
-        "label": "Manual shift",
-        "params": [
-            {"name": "sx", "label": "Shift X", "type": "number", "default": 0.0},
-            {"name": "sy", "label": "Shift Y", "type": "number", "default": 0.0},
-        ],
-    },
-    {"id": "scale", "label": "Scale to [\u22121, 1]", "params": []},
-    {
-        "id": "blur_edges",
-        "label": "Blur edges",
-        "params": [
-            {"name": "low", "label": "Low ratio", "type": "number", "default": 0.0},
-            {"name": "high", "label": "High ratio", "type": "number", "default": 0.8},
-        ],
-    },
-    # -- Reconstruction --
-    {
-        "id": "find_center",
-        "label": "Find center (manual)",
-        "params": [
-            {"name": "init", "label": "Initial guess (blank = mid)", "type": "number", "default": ""},
-            {"name": "tol", "label": "Tolerance", "type": "number", "default": 0.5},
-        ],
-    },
-    {"id": "find_center_vo", "label": "Find center (auto, Vo)", "params": []},
-    {
-        "id": "recon",
-        "label": "Reconstruct",
-        "params": [
+# Tomography ops are grouped into submenu categories. Each entry is
+# (category label, [ops]); the Tomography header menu renders these as
+# hover-expandable submenus (see build_menu_bar). The flat TOMOGRAPHY_OPS list
+# below is derived from these groups for the TOMO_OPS lookup.
+TOMOGRAPHY_GROUPS = [
+    (
+        "Pre-processing",
+        [
             {
-                "name": "algorithm",
-                "label": "Algorithm",
-                "type": "choice",
-                "default": "gridrec",
-                "choices": ["gridrec", "fbp", "art", "sirt", "mlem", "tv"],
+                "id": "normalize",
+                "label": "Normalize (dark/flat)",
+                "params": [
+                    {"name": "cutoff", "label": "Cutoff (blank = none)", "type": "number", "default": ""},
+                ],
             },
-            {"name": "center", "label": "Rotation center (blank = auto)", "type": "number", "default": ""},
-            {"name": "num_iter", "label": "Iterations (iterative only)", "type": "int", "default": 1},
             {
-                "name": "filter_name",
-                "label": "Filter (gridrec/fbp)",
-                "type": "choice",
-                "default": "shepp",
-                "choices": ["none", "shepp", "cosine", "hann", "hamming", "ramlak", "parzen", "butterworth"],
+                "id": "normalize_bg",
+                "label": "Background normalize",
+                "params": [
+                    {"name": "air", "label": "Air pixels", "type": "int", "default": 1},
+                ],
+            },
+            {"id": "minus_log", "label": "Minus log (\u2212log)", "params": []},
+            {
+                "id": "remove_stripe",
+                "label": "Ring removal (stripe)",
+                "params": [
+                    {"name": "level", "label": "Level (blank = auto)", "type": "int", "default": ""},
+                    {"name": "wname", "label": "Wavelet", "type": "text", "default": "db5"},
+                    {"name": "sigma", "label": "Sigma", "type": "number", "default": 2.0},
+                ],
+            },
+            {
+                "id": "retrieve_phase",
+                "label": "Phase retrieval (Paganin)",
+                "params": [
+                    {"name": "pixel_size", "label": "Pixel size (cm)", "type": "number", "default": 1e-4},
+                    {"name": "dist", "label": "Propagation dist (cm)", "type": "number", "default": 50.0},
+                    {"name": "energy", "label": "Energy (keV)", "type": "number", "default": 20.0},
+                    {"name": "alpha", "label": "Regularization \u03b1", "type": "number", "default": 1e-3},
+                ],
+            },
+            {
+                "id": "set_angles",
+                "label": "Set tilt angles",
+                "params": [
+                    {"name": "ang1", "label": "Start angle (deg)", "type": "number", "default": 0.0},
+                    {"name": "ang2", "label": "Stop angle (deg)", "type": "number", "default": 180.0},
+                ],
             },
         ],
-    },
-    {
-        "id": "circ_mask",
-        "label": "Circular mask",
-        "params": [
-            {"name": "axis", "label": "Axis", "type": "int", "default": 0},
-            {"name": "ratio", "label": "Radius ratio", "type": "number", "default": 1.0},
+    ),
+    (
+        "Alignment",
+        [
+            {"id": "align_seq", "label": "Auto-align (sequential)", "params": _ALIGN_PARAMS},
+            {"id": "align_joint", "label": "Auto-align (joint)", "params": _ALIGN_PARAMS},
+            {
+                "id": "shift_images",
+                "label": "Manual shift",
+                "params": [
+                    {"name": "sx", "label": "Shift X", "type": "number", "default": 0.0},
+                    {"name": "sy", "label": "Shift Y", "type": "number", "default": 0.0},
+                ],
+            },
+            {"id": "scale", "label": "Scale to [\u22121, 1]", "params": []},
+            {
+                "id": "blur_edges",
+                "label": "Blur edges",
+                "params": [
+                    {"name": "low", "label": "Low ratio", "type": "number", "default": 0.0},
+                    {"name": "high", "label": "High ratio", "type": "number", "default": 0.8},
+                ],
+            },
         ],
-    },
-    # -- Simulation & Demonstrations --
-    {
-        "id": "add_noise",
-        "label": "Add noise (sim)",
-        "params": [
-            {"name": "ratio", "label": "Std / max ratio", "type": "number", "default": 0.05},
+    ),
+    (
+        "Reconstruction",
+        [
+            {
+                "id": "find_center",
+                "label": "Find center (manual)",
+                "params": [
+                    {"name": "init", "label": "Initial guess (blank = mid)", "type": "number", "default": ""},
+                    {"name": "tol", "label": "Tolerance", "type": "number", "default": 0.5},
+                ],
+            },
+            {"id": "find_center_vo", "label": "Find center (auto, Vo)", "params": []},
+            {
+                "id": "recon",
+                "label": "Reconstruct",
+                "params": [
+                    {
+                        "name": "algorithm",
+                        "label": "Algorithm",
+                        "type": "choice",
+                        "default": "gridrec",
+                        "choices": ["gridrec", "fbp", "art", "sirt", "mlem", "tv"],
+                    },
+                    {"name": "center", "label": "Rotation center (blank = auto)", "type": "number", "default": ""},
+                    {"name": "num_iter", "label": "Iterations (iterative only)", "type": "int", "default": 1},
+                    {
+                        "name": "filter_name",
+                        "label": "Filter (gridrec/fbp)",
+                        "type": "choice",
+                        "default": "shepp",
+                        "choices": ["none", "shepp", "cosine", "hann", "hamming", "ramlak", "parzen", "butterworth"],
+                    },
+                ],
+            },
+            {
+                "id": "circ_mask",
+                "label": "Circular mask",
+                "params": [
+                    {"name": "axis", "label": "Axis", "type": "int", "default": 0},
+                    {"name": "ratio", "label": "Radius ratio", "type": "number", "default": 1.0},
+                ],
+            },
         ],
-    },
-    {
-        "id": "add_jitter",
-        "label": "Add jitter (sim)",
-        "params": [
-            {"name": "low", "label": "Low", "type": "number", "default": 0.0},
-            {"name": "high", "label": "High", "type": "number", "default": 1.0},
+    ),
+    (
+        "Simulation & Demonstrations",
+        [
+            {
+                "id": "add_noise",
+                "label": "Add noise (sim)",
+                "params": [
+                    {"name": "ratio", "label": "Std / max ratio", "type": "number", "default": 0.05},
+                ],
+            },
+            {
+                "id": "add_jitter",
+                "label": "Add jitter (sim)",
+                "params": [
+                    {"name": "low", "label": "Low", "type": "number", "default": 0.0},
+                    {"name": "high", "label": "High", "type": "number", "default": 1.0},
+                ],
+            },
         ],
-    },
+    ),
 ]
+
+# Flat list of all tomography ops, derived from the grouped structure above.
+TOMOGRAPHY_OPS = [op for _cat, ops in TOMOGRAPHY_GROUPS for op in ops]
 
 VISUALIZATION_OPS = [
     {"id": "outline_box", "label": "Outline box", "params": []},
@@ -277,6 +299,13 @@ TOMO_MENUS = [
     ("Visualization", VISUALIZATION_OPS),
 ]
 
+# Header menus whose ops are further split into hover-expandable submenu
+# categories (menu label -> list of (category label, [ops])). Menus not listed
+# here render their ops as a single flat list.
+MENU_SUBGROUPS = {
+    "Tomography": TOMOGRAPHY_GROUPS,
+}
+
 # Flat lookup: op id -> op descriptor (single source of truth for Properties).
 TOMO_OPS = {op["id"]: op for _label, ops in TOMO_MENUS for op in ops}
 
@@ -293,10 +322,13 @@ def build_menu_bar(ctx):
     """Emit the tomviz-style header dropdown menu bar (vuetify3).
 
     Each entry calls ``ctrl.tomo_add_op(op_id)`` to append a block to the pipeline.
+    Menus listed in :data:`MENU_SUBGROUPS` render their ops as hover-expandable
+    submenu categories instead of a single flat list.
     """
     with html.Div(classes="d-flex flex-wrap ga-1 mb-2"):
         for menu_label, ops in TOMO_MENUS:
-            with v3.VMenu(location="bottom start"):
+            subgroups = MENU_SUBGROUPS.get(menu_label)
+            with v3.VMenu(location="bottom start", open_on_hover=bool(subgroups)):
                 with v3.Template(v_slot_activator="{ props }"):
                     v3.VBtn(
                         menu_label,
@@ -306,11 +338,32 @@ def build_menu_bar(ctx):
                         append_icon="mdi-chevron-down",
                     )
                 with v3.VList(density="compact"):
-                    for op in ops:
-                        v3.VListItem(
-                            title=op["label"],
-                            click=(ctx.ctrl.tomo_add_op, f"['{op['id']}']"),
-                        )
+                    if subgroups:
+                        for cat_label, cat_ops in subgroups:
+                            _build_submenu(ctx, cat_label, cat_ops)
+                    else:
+                        for op in ops:
+                            v3.VListItem(
+                                title=op["label"],
+                                click=(ctx.ctrl.tomo_add_op, f"['{op['id']}']"),
+                            )
+
+
+def _build_submenu(ctx, cat_label, ops):
+    """Emit one hover-expandable category as a nested submenu list item."""
+    with v3.VMenu(location="end top", open_on_hover=True, open_on_click=False):
+        with v3.Template(v_slot_activator="{ props }"):
+            v3.VListItem(
+                v_bind="props",
+                title=cat_label,
+                append_icon="mdi-chevron-right",
+            )
+        with v3.VList(density="compact"):
+            for op in ops:
+                v3.VListItem(
+                    title=op["label"],
+                    click=(ctx.ctrl.tomo_add_op, f"['{op['id']}']"),
+                )
 
 
 # ---------------------------------------------------------------------------

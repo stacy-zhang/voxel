@@ -814,6 +814,7 @@ def create_tomo_server():
         with layout.toolbar:
             v3.VSpacer()
             for menu_title, ops in tomo_ui.TOMO_MENUS:
+                subgroups = tomo_ui.MENU_SUBGROUPS.get(menu_title)
                 with v3.VMenu(open_on_hover=True, location="bottom end", viewport_margin=0):
                     with v3.Template(v_slot_activator="{ props }"):
                         v3.VBtn(
@@ -823,6 +824,22 @@ def create_tomo_server():
                             append_icon="mdi-chevron-down",
                         )
                     with v3.VList(density="compact"):
+                        if subgroups:
+                            for cat_label, cat_ops in subgroups:
+                                with v3.VMenu(open_on_hover=True, open_on_click=False, location="start top", viewport_margin=0):
+                                    with v3.Template(v_slot_activator="{ props }"):
+                                        v3.VListItem(
+                                            v_bind="props",
+                                            title=cat_label,
+                                            append_icon="mdi-chevron-left",
+                                        )
+                                    with v3.VList(density="compact"):
+                                        for op in cat_ops:
+                                            v3.VListItem(
+                                                title=op["label"],
+                                                click=(ctrl.tomo_add_op, f"['{op['id']}']"),
+                                            )
+                            continue
                         for op in ops:
                             if op["id"] == "open_data":
                                 click = ctrl.open_browser
