@@ -27,6 +27,7 @@ from trame.widgets import vuetify3 as v3, vtk as vtk_widgets, html
 from vtkmodules.vtkCommonDataModel import (
     vtkPlane, # for slicing the volume with axis-aligned planes
     vtkPiecewiseFunction, # for defining the opacity transfer function (mapping scalar values to opacity)
+    vtkImageData, # in-memory 3D image the pipeline's NumPy result is wrapped in for display
 )
 
 from vtkmodules.vtkFiltersModeling import vtkOutlineFilter # to create a wireframe box around the volume
@@ -50,6 +51,11 @@ from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera # a
 import vtkmodules.vtkInteractionStyle  # noqa – required
 import vtkmodules.vtkRenderingOpenGL2  # noqa – required
 # the above two imports are needed to ensure the appropriate VTK rendering and interaction styles are registered, even if we don't directly reference them in the code
+
+from voxel.features.base import FeatureContext
+from voxel.features.tomo import ui as tomo_ui
+from voxel.features.tomo.feature import TomographyFeature
+from voxel.features.tomo import pipeline as tomo_pipeline
 
 
 def create_tomo_server():
@@ -123,7 +129,7 @@ def create_tomo_server():
     outline_actor = vtkActor()
     outline_actor.SetMapper(outline_mapper)
     outline_actor.GetProperty().SetColor(1.0, 1.0, 1.0) # white outline
-    outline_actor.GetProperty().SetLineWidth(1.5)
+    outline_actor.GetProperty().SetLineWidth(1)
     outline_actor.VisibilityOff() # start with outline hidden until a file is loaded
     renderer.AddActor(outline_actor)
 
@@ -210,7 +216,6 @@ def create_tomo_server():
     state.setdefault("shade", True)
     state.setdefault("scalar_range", "—")
     state.setdefault("dimensions", "—")
-    state.setdefault("status", "")
     state.setdefault("loaded", False)
 
     # Colormap / contrast / blend / lighting
@@ -250,6 +255,11 @@ def create_tomo_server():
     _active_reader = None  # prevent reader from being garbage-collected
     _data_range = (0.0, 1.0)  # raw scalar range of the loaded data
     _volume_bounds = (0.0, 1.0, 0.0, 1.0, 0.0, 1.0)  # xmin,xmax,ymin,ymax,zmin,zmax
+    # Bridge between the workflow and the scene: "base" holds the loaded dataset
+    # (a pipeline.TomoData) that tomo_run_pipeline feeds through run_pipeline;
+    # "result" caches the last pipeline output; "browse_target" routes a
+    # file-browser pick into a specific pipeline block param (see _fb_open).
+    _pipeline_io: dict = {}
 
 
     def _update_clip_planes():
@@ -363,11 +373,9 @@ def create_tomo_server():
 
     def load_tiff(path_str: str):
         """Read a 3-D TIFF and feed it into the volume pipeline."""
-        state.status = ""
         resolved = Path(path_str).expanduser().resolve() if path_str else None
 
         if not resolved or not resolved.is_file():
-            state.status = f"File not found: {path_str}" if path_str else ""
             volume_actor.VisibilityOff()
             state.loaded = False
             state.scalar_range = "—"
@@ -416,11 +424,106 @@ def create_tomo_server():
             state.loaded = True
             state.tiff_path = str(resolved)
         except Exception as exc:  # noqa: BLE001
-            state.status = str(exc)
             volume_actor.VisibilityOff()
             state.loaded = False
 
         _view_update()
+
+    # connect the tomography pipeline (works in in NumPy via pipeline.TomoData) 
+    # to the VTK scene. load_data() reads a file into a TomoData; 
+    # _show_numpy_volume() renders any NumPy volume (a freshly loaded
+    # dataset OR a pipeline result) through the same volume_mapper/outline that
+    # load_tiff uses.
+    def _show_numpy_volume(vol):
+        """Wrap a 3-D NumPy array as vtkImageData and display it as the volume."""
+        nonlocal _active_reader, _volume_bounds
+        arr = np.ascontiguousarray(np.asarray(vol, dtype=np.float32))
+        if arr.ndim == 2:  # a single image -> a 1-slice volume
+            arr = arr[np.newaxis, ...]
+        nz, ny, nx = arr.shape
+        img = vtkImageData()
+        img.SetDimensions(nx, ny, nz)  # VTK is x-fastest; C-order (z,y,x) matches
+        vtk_arr = numpy_support.numpy_to_vtk(arr.ravel(order="C"), deep=True)
+        img.GetPointData().SetScalars(vtk_arr)
+        _active_reader = img  # keep the image alive; the mapper only holds a ref
+
+        volume_mapper.SetInputData(img)
+        outline_filter.SetInputData(img)
+        srange = img.GetScalarRange()
+        _setup_transfer_functions(srange)
+        vol_property.SetScalarOpacityUnitDistance(1.0)
+        vol_property.SetShade(bool(state.shade))
+
+        volume_actor.VisibilityOn()
+        outline_actor.SetVisibility(bool(state.show_outline))
+
+        _volume_bounds = img.GetBounds()
+        state.slice_x_min = 0.0
+        state.slice_x_max = 1.0
+        state.slice_y_min = 0.0
+        state.slice_y_max = 1.0
+        state.slice_z_min = 0.0
+        state.slice_z_max = 1.0
+        _update_clip_planes()
+        renderer.ResetCamera()
+
+        state.scalar_range = f"{srange[0]:.3f} – {srange[1]:.3f}"
+        state.dimensions = f"{nx} × {ny} × {nz}"
+        state.loaded = True
+        _view_update()
+
+    def _read_zarr_stack(root):
+        """Stack a Zarr group of per-projection 2-D arrays into (theta, y, x).
+
+        Targets ``sim_data/scan_64`` (subgroups 0000..0019, each a 2-D
+        projection). Falls back to reading a single Zarr array store.
+        """
+        import zarr  # optional dep; only needed for Zarr datasets
+
+        group = zarr.open_group(str(root), mode="r")
+        keys = sorted(group.array_keys())
+        if not keys:
+            return np.asarray(zarr.open_array(str(root), mode="r"))
+        return np.stack([np.asarray(group[k]) for k in keys], axis=0)
+
+    def _read_array(path):
+        """Read a dataset path into a NumPy array (TIFF stack, .npy, or Zarr)."""
+        p = Path(path)
+        if p.is_dir() or (p / "zarr.json").exists():
+            return _read_zarr_stack(p)
+        suffix = p.suffix.lower()
+        if suffix in (".tif", ".tiff"):
+            import tifffile
+            return np.asarray(tifffile.imread(str(p)))
+        if suffix == ".npy":
+            return np.load(str(p))
+        if suffix == ".zarr":
+            return _read_zarr_stack(p)
+        raise ValueError(f"Unsupported dataset type: {p.name}")
+
+    def load_data(path_str, kind="tilt_series"):
+        """Load a dataset into the *base* TomoData and display it.
+
+        File -> Open Data routes here. The loaded array becomes
+        ``_pipeline_io['base']`` -- the TomoData that ``tomo_run_pipeline`` feeds
+        through ``pipeline.run_pipeline``. It is also shown immediately so the
+        user sees the input before running the pipeline.
+        """
+        resolved = Path(path_str).expanduser()
+        if not resolved.exists():
+            return
+        try:
+            arr = _read_array(resolved)
+        except Exception as exc:  # noqa: BLE001
+            return
+        data = tomo_pipeline.TomoData(kind=kind)
+        data = data.with_(recon=arr) if kind == "volume" else data.with_(prj=arr)
+        _pipeline_io["base"] = data
+        try:
+            _show_numpy_volume(arr)
+        except Exception as exc:  # noqa: BLE001
+            return
+        state.tiff_path = str(resolved)
 
     # file browser helpers
     def _list_directory(directory: str) -> list[dict]:
@@ -446,12 +549,12 @@ def create_tomo_server():
                 }
             )
 
-        # TIFF files (sorted)
+        # Dataset files: TIFF stacks + .npy arrays (sorted)
         tiff_files = sorted(
             (
                 f
                 for f in p.iterdir()
-                if f.is_file() and f.suffix.lower() in (".tif", ".tiff")
+                if f.is_file() and f.suffix.lower() in (".tif", ".tiff", ".npy")
             ),
             key=lambda f: f.name.lower(),
         )
@@ -501,17 +604,29 @@ def create_tomo_server():
             state.browser_selected = []
 
     def browser_confirm():
-        """Load the selected file and close the dialog."""
+        """Load the highlighted file, or route it into a pipeline param.
+
+        Normally the pick becomes the base dataset (load_data). When the browser
+        was opened for a specific block parameter (via _fb_open, which sets
+        ``browse_target``), the pick is written into that param instead.
+        """
         selected = state.browser_selected
-        if selected and len(selected) > 0:
-            chosen = selected[0]
-            state.browser_open = False
-            load_tiff(chosen)
-        # If nothing selected, just close
+        target = _pipeline_io.pop("browse_target", None)
+        state.browser_open = False
+        if not selected or len(selected) == 0:
+            return
+        chosen = selected[0]
+        if target:
+            try:
+                _, op_id, name = target.split("::")
+                ctrl.tomo_set_param(op_id, name, chosen)
+            except ValueError:
+                pass
         else:
-            state.browser_open = False
+            load_data(chosen)
 
     def browser_cancel():
+        _pipeline_io.pop("browse_target", None)
         state.browser_open = False
 
     ctrl.open_browser = open_browser
@@ -642,24 +757,63 @@ def create_tomo_server():
         _view_update()
 
 
+    def _fb_open(target, mode="file"):
+        # Remember which block param this browse is for, then open the browser;
+        # browser_confirm writes the pick back into that param.
+        _pipeline_io["browse_target"] = target
+        open_browser()
+
+    ctx = FeatureContext(server=server, state=state, ctrl=ctrl, fb_open=_fb_open)
+    TomographyFeature().register_controllers(ctx)
+
+    # The shared feature controllers report progress through ctrl.set_status;
+    # provide a sink so those calls never raise (this app has no status widget).
+    ctrl.set_status = lambda msg="": setattr(state, "status", msg)
+
+    @ctrl.set("tomo_save_data")
+    def tomo_save_data():
+        return
+
+    @ctrl.set("tomo_run_pipeline")
+    def tomo_run_pipeline():
+        """Run the pipeline on the loaded data and display the result."""
+        base = _pipeline_io.get("base")
+        if base is None:
+            return
+        try:
+            result = tomo_pipeline.run_pipeline(
+                base,
+                list(state.pipeline),
+            )
+        except ModuleNotFoundError:
+            return
+        except Exception as exc:  # noqa: BLE001
+            return
+        _pipeline_io["result"] = result
+        vol = result.recon if result.recon is not None else result.prj
+        if vol is not None:
+            try:
+                _show_numpy_volume(np.asarray(vol))
+            except Exception as exc:  # noqa: BLE001
+                return
+
+    @state.change("pipeline")
+    def _auto_run_pipeline(**_kw):
+        if _pipeline_io.get("base") is not None:
+            tomo_run_pipeline()
+
+
     ######
     # UI #
     ######
-    workflow_menus = [
-        ("File", ["Open Data", "Save Data", "Export"]),
-        ("Data Transforms", ["Data Management", "Volume Manipulation", "Math Operations", "Filters"]),
-        ("Tomography", ["Mark Data as Volume", "Mark Data as Tilt Series", "Set Tilt Angles", "Pre-processing", "Alignment", "Reconstruction", "Simulation & Demonstrations"]),
-        ("Visualization", ["Volume", "Outline", "Slice", "Contour", "Threshold", "Clip", "Ruler", "Scale Cube"]),
-    ]
-
-    option_funcs = {"Open Data": ctrl.open_browser}
-
+    # File menu items call app-level handlers (open/save), every other op appends a
+    # pipeline block via ctrl.tomo_add_op 
     with SinglePageWithDrawerLayout(server) as layout:
         layout.title.set_text("Tomography Viewer")
 
         with layout.toolbar:
             v3.VSpacer()
-            for menu_title, options in workflow_menus:
+            for menu_title, ops in tomo_ui.TOMO_MENUS:
                 with v3.VMenu(open_on_hover=True, location="bottom end", viewport_margin=0):
                     with v3.Template(v_slot_activator="{ props }"):
                         v3.VBtn(
@@ -669,24 +823,34 @@ def create_tomo_server():
                             append_icon="mdi-chevron-down",
                         )
                     with v3.VList(density="compact"):
-                        for option in options:
-                            v3.VListItem(
-                                title=option,
-                                click=option_funcs.get(option),
-                            )
+                        for op in ops:
+                            if op["id"] == "open_data":
+                                click = ctrl.open_browser
+                            elif op["id"] == "save_data":
+                                click = ctrl.tomo_save_data
+                            else:
+                                # Add this operation to the pipeline as a block.
+                                click = (ctrl.tomo_add_op, f"['{op['id']}']")
+                            v3.VListItem(title=op["label"], click=click)
 
         with layout.drawer as drawer:
             drawer.width = 360
-
-            with html.Div(classes="d-flex flex-column fill-height"):
-                with v3.VCard(flat=True, classes="d-flex flex-column mt-2", style=("`flex: ${drawer_split} 1 0px`",)):
-                    v3.VCardTitle("Pipeline", classes="text-h6 font-weight-regular")
-                # draggable divider for resizing drawer sections
+            with html.Div(classes="d-flex flex-column fill-height", style="height:100%;"):
+                # Pipeline
+                with v3.VCard(
+                    flat=True,
+                    classes="d-flex flex-column",
+                    style=("`flex: ${drawer_split} 1 0px; overflow:hidden;`",),
+                ):
+                    v3.VCardTitle("Pipeline", classes="text-subtitle-1 font-weight-medium py-2 mt-2")
+                    with html.Div(style="overflow:auto; padding:0 12px 12px;"):
+                        tomo_ui.build_pipeline_panel(ctx)
+                # draggable divider for resizing sections
                 html.Div(
                     v3.VIcon(icon="mdi-drag-horizontal", size=18, classes="mx-auto"),
                     classes="flex-shrink-0",
-                    style="height: 5px; cursor: row-resize; touch-action: none; "
-                    "background-color: rgba(0,0,0,0.12);",
+                    style="height:6px; cursor:row-resize; touch-action:none; "
+                    "background-color:rgba(0,0,0,0.12);",
                     __events=["pointerdown", "pointermove", "pointerup"],
                     pointerdown="$event.target.setPointerCapture($event.pointerId)",
                     pointermove=(
@@ -695,8 +859,15 @@ def create_tomo_server():
                         "/ $event.currentTarget.parentNode.getBoundingClientRect().height)))"
                     ),
                 )
-                with v3.VCard(flat=True, classes="d-flex flex-column", style=("`flex: ${1 - drawer_split} 1 0px`",)):
-                    v3.VCardTitle("Properties", classes="text-h6 font-weight-regular")
+                # Properties
+                with v3.VCard(
+                    flat=True,
+                    classes="d-flex flex-column",
+                    style=("`flex: ${1 - drawer_split} 1 0px; overflow:hidden;`",),
+                ):
+                    v3.VCardTitle("Properties", classes="text-subtitle-1 font-weight-medium py-2")
+                    with html.Div(style="overflow:auto; padding:0 12px 12px;"):
+                        tomo_ui.build_properties_panel(ctx)
 
         # main 3D view area
         with layout.content:
@@ -717,7 +888,7 @@ def create_tomo_server():
             scrollable=True,
         ):
             with v3.VCard():
-                v3.VCardTitle("Select a TIFF file")
+                v3.VCardTitle("Select a dataset (TIFF / .npy) or folder")
                 with v3.VCardSubtitle():
                     html.Span("{{ browser_path }}")
     
@@ -731,9 +902,7 @@ def create_tomo_server():
                         classes="mb-2",
                         block=True,
                     )
-    
                     v3.VDivider()
-    
                     # File / directory list
                     with v3.VList(
                         density="compact",
