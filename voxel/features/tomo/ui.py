@@ -85,36 +85,46 @@ FILE_OPS = [
 DATA_TRANSFORM_OPS = [
     {
         "id": "crop",
-        "label": "Crop / ROI",
+        "label": "Crop",
         "params": [
-            {"name": "row_min", "label": "Row min", "type": "int", "default": 0},
-            {"name": "row_max", "label": "Row max (0 = end)", "type": "int", "default": 0},
-            {"name": "col_min", "label": "Col min", "type": "int", "default": 0},
-            {"name": "col_max", "label": "Col max (0 = end)", "type": "int", "default": 0},
+            {"name": "x_min", "label": "X min", "type": "int", "default": 0},
+            {"name": "x_max", "label": "X max (0 = end)", "type": "int", "default": 0},
+            {"name": "y_min", "label": "Y min", "type": "int", "default": 0},
+            {"name": "y_max", "label": "Y max (0 = end)", "type": "int", "default": 0},
+            {"name": "z_min", "label": "Z min", "type": "int", "default": 0},
+            {"name": "z_max", "label": "Z max (0 = end)", "type": "int", "default": 0},
         ],
     },
     {
         "id": "downsample",
-        "label": "Downsample (bin)",
+        "label": "Downsample (Bin)",
         "params": [
             {"name": "level", "label": "Bin level (2^n)", "type": "int", "default": 1},
             {"name": "axis", "label": "Axis", "type": "int", "default": 2},
         ],
     },
     {
-        "id": "remove_outlier",
-        "label": "Remove outliers (zingers)",
+        "id": "median_filter",
+        "label": "Median Filter",
         "params": [
-            {"name": "dif", "label": "Intensity diff", "type": "number", "default": 500.0},
-            {"name": "size", "label": "Kernel size", "type": "int", "default": 3},
+            {"name": "size", "label": "Size", "type": "int", "default": 2, "min": 1},
         ],
     },
     {
-        "id": "median_filter",
-        "label": "Median filter",
+        "id": "gaussian_filter",
+        "label": "Gaussian Filter",
         "params": [
-            {"name": "size", "label": "Kernel size", "type": "int", "default": 3},
-            {"name": "axis", "label": "Axis", "type": "int", "default": 0},
+            {"name": "sigma", "label": "Sigma", "type": "number", "default": 2.000, "step": 0.500, "min": 0.000},
+        ],
+    },
+    {
+        "id": "wiener_filter",
+        "label": "Wiener Filter",
+        "params": [
+                {"name": "sigma_x", "label": "Sigma-X", "type": "number", "default": 0.500, "step": 0.500, "min": 0.001, "max": 1.000},
+                {"name": "sigma_y", "label": "Sigma-Y", "type": "number", "default": 0.500, "step": 0.500, "min": 0.001, "max": 1.000},
+                {"name": "sigma_z", "label": "Sigma-Z", "type": "number", "default": 0.500, "step": 0.500, "min": 0.001, "max": 1.000},
+                {"name": "snr", "label": "SNR", "type": "number", "default": 15.000, "step": 0.500, "min": 0.000},
         ],
     },
 ]
@@ -129,14 +139,14 @@ TOMOGRAPHY_GROUPS = [
         [
             {
                 "id": "normalize",
-                "label": "Normalize (dark/flat)",
+                "label": "Normalize (Dark/Flat)",
                 "params": [
                     {"name": "cutoff", "label": "Cutoff (blank = none)", "type": "number", "default": ""},
                 ],
             },
             {
                 "id": "normalize_bg",
-                "label": "Background normalize",
+                "label": "Background Normalize",
                 "params": [
                     {"name": "air", "label": "Air pixels", "type": "int", "default": 1},
                 ],
@@ -144,7 +154,7 @@ TOMOGRAPHY_GROUPS = [
             {"id": "minus_log", "label": "Minus log (\u2212log)", "params": []},
             {
                 "id": "remove_stripe",
-                "label": "Ring removal (stripe)",
+                "label": "Ring Removal (Stripe)",
                 "params": [
                     {"name": "level", "label": "Level (blank = auto)", "type": "int", "default": ""},
                     {"name": "wname", "label": "Wavelet", "type": "text", "default": "db5"},
@@ -153,7 +163,7 @@ TOMOGRAPHY_GROUPS = [
             },
             {
                 "id": "retrieve_phase",
-                "label": "Phase retrieval (Paganin)",
+                "label": "Phase Retrieval (Paganin)",
                 "params": [
                     {"name": "pixel_size", "label": "Pixel size (cm)", "type": "number", "default": 1e-4},
                     {"name": "dist", "label": "Propagation dist (cm)", "type": "number", "default": 50.0},
@@ -163,7 +173,7 @@ TOMOGRAPHY_GROUPS = [
             },
             {
                 "id": "set_angles",
-                "label": "Set tilt angles",
+                "label": "Set Tilt Angles",
                 "params": [
                     {"name": "ang1", "label": "Start angle (deg)", "type": "number", "default": 0.0},
                     {"name": "ang2", "label": "Stop angle (deg)", "type": "number", "default": 180.0},
@@ -178,7 +188,7 @@ TOMOGRAPHY_GROUPS = [
             {"id": "align_joint", "label": "Auto-align (joint)", "params": _ALIGN_PARAMS},
             {
                 "id": "shift_images",
-                "label": "Manual shift",
+                "label": "Manual Shift",
                 "params": [
                     {"name": "sx", "label": "Shift X", "type": "number", "default": 0.0},
                     {"name": "sy", "label": "Shift Y", "type": "number", "default": 0.0},
@@ -187,7 +197,7 @@ TOMOGRAPHY_GROUPS = [
             {"id": "scale", "label": "Scale to [\u22121, 1]", "params": []},
             {
                 "id": "blur_edges",
-                "label": "Blur edges",
+                "label": "Blur Edges",
                 "params": [
                     {"name": "low", "label": "Low ratio", "type": "number", "default": 0.0},
                     {"name": "high", "label": "High ratio", "type": "number", "default": 0.8},
@@ -200,13 +210,13 @@ TOMOGRAPHY_GROUPS = [
         [
             {
                 "id": "find_center",
-                "label": "Find center (manual)",
+                "label": "Find Center (Manual)",
                 "params": [
                     {"name": "init", "label": "Initial guess (blank = mid)", "type": "number", "default": ""},
                     {"name": "tol", "label": "Tolerance", "type": "number", "default": 0.5},
                 ],
             },
-            {"id": "find_center_vo", "label": "Find center (auto, Vo)", "params": []},
+            {"id": "find_center_vo", "label": "Find Center (Auto, Vo)", "params": []},
             {
                 "id": "recon",
                 "label": "Reconstruct",
@@ -231,7 +241,7 @@ TOMOGRAPHY_GROUPS = [
             },
             {
                 "id": "circ_mask",
-                "label": "Circular mask",
+                "label": "Circular Mask",
                 "params": [
                     {"name": "axis", "label": "Axis", "type": "int", "default": 0},
                     {"name": "ratio", "label": "Radius ratio", "type": "number", "default": 1.0},
@@ -244,14 +254,14 @@ TOMOGRAPHY_GROUPS = [
         [
             {
                 "id": "add_noise",
-                "label": "Add noise (sim)",
+                "label": "Add Noise (Sim)",
                 "params": [
                     {"name": "ratio", "label": "Std / max ratio", "type": "number", "default": 0.05},
                 ],
             },
             {
                 "id": "add_jitter",
-                "label": "Add jitter (sim)",
+                "label": "Add Jitter (Sim)",
                 "params": [
                     {"name": "low", "label": "Low", "type": "number", "default": 0.0},
                     {"name": "high", "label": "High", "type": "number", "default": 1.0},
@@ -265,8 +275,8 @@ TOMOGRAPHY_GROUPS = [
 TOMOGRAPHY_OPS = [op for _cat, ops in TOMOGRAPHY_GROUPS for op in ops]
 
 VISUALIZATION_OPS = [
-    {"id": "outline_box", "label": "Outline box", "params": []},
-    {"id": "scale_cube", "label": "Scale cube / axes", "params": []},
+    {"id": "outline_box", "label": "Outline Box", "params": []},
+    {"id": "scale_cube", "label": "Scale Cube / Axes", "params": []},
     {
         "id": "ortho_slices",
         "label": "Orthogonal slices",
@@ -278,7 +288,7 @@ VISUALIZATION_OPS = [
     },
     {
         "id": "volume",
-        "label": "Volume render",
+        "label": "Volume Render",
         "params": [
             {
                 "name": "mode",
