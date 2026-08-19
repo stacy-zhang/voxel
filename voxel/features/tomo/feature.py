@@ -128,14 +128,14 @@ class TomographyFeature(VoxelFeature):
             state.selected_op_params = params
 
         @ctrl.set("tomo_add_op")
-        def tomo_add_op(op_id):
+        def tomo_add_op(op_id, label=None, params=None):
             spec = tomo_ui.TOMO_OPS.get(op_id)
             if spec is None:
                 return
             block = {
                 "id": f"op{next(self._id_counter)}",
                 "op": op_id,
-                "label": spec["label"],
+                "label": label or spec["label"],
                 "params": tomo_ui.default_params(op_id),
                 "enabled": True,
             }
@@ -146,6 +146,8 @@ class TomographyFeature(VoxelFeature):
                     dim = _crop_dim(name)
                     if dim:
                         block["params"][name] = dim
+            if params:
+                block["params"] = {**block["params"], **params} # Merge user-provided params with default ones
             state.pipeline = state.pipeline + [block]
             state.selected_op_id = block["id"]
             state.menu_open = ""

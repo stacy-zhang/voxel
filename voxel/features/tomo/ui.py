@@ -65,11 +65,11 @@ FILE_OPS = [
         "params": [
             {"name": "path", "label": "File / directory", "type": "path", "default": ""},
             {
-                "name": "kind",
-                "label": "Data kind",
+                "name": "data_type",
+                "label": "Data Type",
                 "type": "choice",
-                "default": "tilt_series",
-                "choices": ["tilt_series", "volume"],
+                "default": "Tilt Series",
+                "choices": ["Tilt Series", "Volume"],
             },
         ],
     },
@@ -275,17 +275,6 @@ TOMOGRAPHY_GROUPS = [
 TOMOGRAPHY_OPS = [op for _cat, ops in TOMOGRAPHY_GROUPS for op in ops]
 
 VISUALIZATION_OPS = [
-    {"id": "outline_box", "label": "Outline Box", "params": []},
-    {"id": "scale_cube", "label": "Scale Cube / Axes", "params": []},
-    {
-        "id": "ortho_slices",
-        "label": "Orthogonal slices",
-        "params": [
-            {"name": "show_x", "label": "Show X slice", "type": "bool", "default": True},
-            {"name": "show_y", "label": "Show Y slice", "type": "bool", "default": True},
-            {"name": "show_z", "label": "Show Z slice", "type": "bool", "default": True},
-        ],
-    },
     {
         "id": "volume",
         "label": "Volume Render",
@@ -298,6 +287,41 @@ VISUALIZATION_OPS = [
                 "choices": ["composite", "mip", "minip", "average"],
             },
         ],
+    },
+    {   "id": "outline_box", 
+        "label": "Outline Box",
+        "params": []
+    },
+    {
+        "id": "scale_cube", 
+        "label": "Scale Cube", 
+        "params": [
+            {"name": "side_length", "label": "Side Length", "type": "number", "default": 1.0, "min": 0.0}
+        ]
+    },
+    {
+        "id": "ortho_slices",
+        "label": "Orthogonal slices",
+        "params": [
+            {"name": "show_x", "label": "Show X slice", "type": "bool", "default": True},
+            {"name": "show_y", "label": "Show Y slice", "type": "bool", "default": True},
+            {"name": "show_z", "label": "Show Z slice", "type": "bool", "default": True},
+        ],
+    },
+    {
+        "id": "clip",
+        "label": "Clip",
+        "params": [
+            {"name": "direction", "label": "Direction", "type": "choice", "default": "XY Plane", "choices": ["XY Plane", "YZ Plane", "XZ Plane"]},
+            {"name": "plane", "label": "Plane", "type": "int", "default": 0, "min": 0},
+        ],
+    },
+    {
+        "id": "background",
+        "label": "Background Color",
+        "params": [
+            {"name": "color", "label": "Color", "type": "color", "default": "#000000"},
+        ]   
     },
 ]
 

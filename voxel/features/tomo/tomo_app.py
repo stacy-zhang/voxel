@@ -636,6 +636,8 @@ def create_tomo_server():
             except ValueError:
                 pass
         else:
+            # Pipeline block for the open data action
+            ctrl.tomo_add_op("open_data", label="Data", params={"path": chosen})
             load_data(chosen)
 
     def browser_cancel():
