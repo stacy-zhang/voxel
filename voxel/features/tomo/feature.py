@@ -59,6 +59,35 @@ class TomographyFeature(VoxelFeature):
         state.setdefault("menu_open", "")
         state.setdefault("open_tab", "pipeline")
 
+        # Full extents of the loaded base dataset (x=cols, y=rows, z=depth/theta),
+        # 0 until data is loaded. Used to bound the Crop editor's max inputs.
+        state.setdefault("tomo_dim_x", 0)
+        state.setdefault("tomo_dim_y", 0)
+        state.setdefault("tomo_dim_z", 0)
+
+        # Crop param name -> the state key holding that axis's full extent.
+        _CROP_AXIS = {
+            "x_min": "tomo_dim_x", "x_max": "tomo_dim_x",
+            "y_min": "tomo_dim_y", "y_max": "tomo_dim_y",
+            "z_min": "tomo_dim_z", "z_max": "tomo_dim_z",
+        }
+
+        def _crop_dim(name) -> int:
+            """Full extent of the axis a crop param bounds (0 if unknown)."""
+            return int(getattr(state, _CROP_AXIS[name], 0) or 0)
+
+        def _clamp_crop(name, value, dim) -> int:
+            """Clamp a crop value into ``[0, dim]``; max params snap 0/overflow to dim."""
+            try:
+                v = int(float(value)) # value is the user input
+            except (TypeError, ValueError):
+                v = 0
+            if dim <= 0:
+                return v  # extents unknown: keep the raw value (0 = end fallback)
+            if name.endswith("_max"): # an input for the max crop bound 
+                return dim if v <= 0 or v > dim else v # if input is 0 or too big, clamp to dim
+            return max(0, min(v, dim))
+
         def _find(blocks, op_id):
             for i, b in enumerate(blocks):
                 if b["id"] == op_id:
@@ -79,17 +108,24 @@ class TomographyFeature(VoxelFeature):
                 state.selected_op_params = []
                 return
             spec = tomo_ui.TOMO_OPS[block["op"]]
+            is_crop = block["op"] == "crop"
             state.selected_op_label = block["label"]
-            state.selected_op_params = [
-                {
+            params = []
+            for p in spec["params"]:
+                entry = {
                     "name": p["name"],
                     "label": p["label"],
                     "type": p["type"],
                     "choices": p.get("choices", []),
                     "value": block["params"].get(p["name"], p.get("default", "")),
+                    "min": p.get("min"),
+                    "max": p.get("max"),
                 }
-                for p in spec["params"]
-            ]
+                if is_crop and _crop_dim(p["name"]):
+                    entry["min"] = 0
+                    entry["max"] = _crop_dim(p["name"])
+                params.append(entry)
+            state.selected_op_params = params
 
         @ctrl.set("tomo_add_op")
         def tomo_add_op(op_id):
@@ -103,6 +139,13 @@ class TomographyFeature(VoxelFeature):
                 "params": tomo_ui.default_params(op_id),
                 "enabled": True,
             }
+            # Crop maxes default to the full extent (last slice) of each axis
+            # rather than the placeholder 0, so the user sees the real bounds.
+            if op_id == "crop":
+                for name in ("x_max", "y_max", "z_max"):
+                    dim = _crop_dim(name)
+                    if dim:
+                        block["params"][name] = dim
             state.pipeline = state.pipeline + [block]
             state.selected_op_id = block["id"]
             state.menu_open = ""
@@ -140,6 +183,8 @@ class TomographyFeature(VoxelFeature):
             _, block = _find(blocks, op_id)
             if block is None:
                 return
+            if block["op"] == "crop" and name in _CROP_AXIS:
+                value = _clamp_crop(name, value, _crop_dim(name))
             block["params"] = {**block["params"], name: value}
             state.pipeline = blocks
             if state.selected_op_id == op_id:

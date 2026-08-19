@@ -519,6 +519,19 @@ def create_tomo_server():
         data = tomo_pipeline.TomoData(kind=kind)
         data = data.with_(recon=arr) if kind == "volume" else data.with_(prj=arr)
         _pipeline_io["base"] = data
+        # Record the base extents (x=cols, y=rows, z=depth/theta) so the Crop
+        # editor can bound its x/y/z max inputs. Kept off the displayed-result
+        # path (which the auto-run mutates) so crop bounds stay at full size.
+        base_arr = np.asarray(arr)
+        if base_arr.ndim >= 3:
+            bnz, bny, bnx = base_arr.shape[-3], base_arr.shape[-2], base_arr.shape[-1]
+        elif base_arr.ndim == 2:
+            bnz, bny, bnx = 1, base_arr.shape[0], base_arr.shape[1]
+        else:
+            bnz = bny = bnx = 0
+        state.tomo_dim_x = int(bnx)
+        state.tomo_dim_y = int(bny)
+        state.tomo_dim_z = int(bnz)
         try:
             _show_numpy_volume(arr)
         except Exception as exc:  # noqa: BLE001

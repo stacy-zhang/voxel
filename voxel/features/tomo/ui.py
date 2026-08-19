@@ -88,11 +88,11 @@ DATA_TRANSFORM_OPS = [
         "label": "Crop",
         "params": [
             {"name": "x_min", "label": "X min", "type": "int", "default": 0},
-            {"name": "x_max", "label": "X max (0 = end)", "type": "int", "default": 0},
+            {"name": "x_max", "label": "X max", "type": "int", "default": 0},
             {"name": "y_min", "label": "Y min", "type": "int", "default": 0},
-            {"name": "y_max", "label": "Y max (0 = end)", "type": "int", "default": 0},
+            {"name": "y_max", "label": "Y max", "type": "int", "default": 0},
             {"name": "z_min", "label": "Z min", "type": "int", "default": 0},
-            {"name": "z_max", "label": "Z max (0 = end)", "type": "int", "default": 0},
+            {"name": "z_max", "label": "Z max", "type": "int", "default": 0},
         ],
     },
     {
@@ -474,6 +474,8 @@ def _properties_body(ctx):
                 label=("p.label",),
                 v_model=("p.value",),
                 type="number",
+                min=("p.min",),
+                max=("p.max",),
                 density="compact",
                 variant="outlined",
                 hide_details=True,
