@@ -122,14 +122,17 @@ def _require_ang(data: TomoData) -> np.ndarray:
 def op_crop(data: TomoData, params: dict) -> TomoData:
     """Crop every projection to a row/column ROI (pure NumPy, no TomoPy)."""
     prj = _require_prj(data)
-    _, ny, nx = prj.shape
-    r0 = max(0, _i(params, "row_min", 0) or 0)
-    r1 = _i(params, "row_max", 0) or 0
-    c0 = max(0, _i(params, "col_min", 0) or 0)
-    c1 = _i(params, "col_max", 0) or 0
+    nz, ny, nx = prj.shape
+    r0 = max(0, _i(params, "y_min", 0) or 0)
+    r1 = _i(params, "y_max", 0) or 0
+    c0 = max(0, _i(params, "x_min", 0) or 0)
+    c1 = _i(params, "x_max", 0) or 0
+    d0 = max(0, _i(params, "z_min", 0) or 0)
+    d1 = _i(params, "z_max", 0) or 0
     r1 = ny if r1 <= r0 else min(ny, r1)
     c1 = nx if c1 <= c0 else min(nx, c1)
-    return data.with_(prj=prj[:, r0:r1, c0:c1])
+    d1 = nz if d1 <= d0 else min(nz, d1)
+    return data.with_(prj=prj[d0:d1, r0:r1, c0:c1])
 
 
 def op_downsample(data: TomoData, params: dict) -> TomoData:
@@ -142,16 +145,6 @@ def op_downsample(data: TomoData, params: dict) -> TomoData:
     return data.with_(prj=downsample(prj, level=level, axis=axis))
 
 
-def op_remove_outlier(data: TomoData, params: dict) -> TomoData:
-    """Remove zingers/outliers brighter than ``dif`` (tomopy.misc.corr.remove_outlier)."""
-    from tomopy.misc.corr import remove_outlier
-
-    prj = _require_prj(data)
-    dif = _f(params, "dif", 500.0)
-    size = _i(params, "size", 3) or 3
-    return data.with_(prj=remove_outlier(prj, dif, size=size))
-
-
 def op_median_filter(data: TomoData, params: dict) -> TomoData:
     """Median-filter each projection (tomopy.misc.corr.median_filter)."""
     from tomopy.misc.corr import median_filter
@@ -160,6 +153,27 @@ def op_median_filter(data: TomoData, params: dict) -> TomoData:
     size = _i(params, "size", 3) or 3
     axis = _i(params, "axis", 0)
     return data.with_(prj=median_filter(prj, size=size, axis=axis))
+
+def op_gaussian_filter(data: TomoData, params: dict) -> TomoData:
+    """Gaussian-filter each projection (tomopy.misc.corr.gaussian_filter)."""
+    from tomopy.misc.corr import gaussian_filter
+
+    prj = _require_prj(data)
+    sigma = _f(params, "sigma", 2.0) or 2.0
+    axis = _i(params, "axis", 0)
+    return data.with_(prj=gaussian_filter(prj, sigma=sigma, axis=axis))
+
+def op_wiener_filter(data: TomoData, params: dict) -> TomoData:
+    """Wiener-filter each projection (tomopy.misc.corr.wiener_filter)."""
+    from tomopy.misc.corr import wiener_filter
+
+    prj = _require_prj(data)
+    sigma_x = _f(params, "sigma_x", 0.5) or 0.5
+    sigma_y = _f(params, "sigma_y", 0.5) or 0.5
+    sigma_z = _f(params, "sigma_z", 0.5) or 0.5
+    snr = _f(params, "snr", 15.0) or 15.0
+    axis = _i(params, "axis", 0)
+    return data.with_(prj=wiener_filter(prj, sigma_x=sigma_x, sigma_y=sigma_y, sigma_z=sigma_z, snr=snr, axis=axis))
 
 
 # ===========================================================================
@@ -409,8 +423,9 @@ OP_FUNCS: dict[str, Callable[[TomoData, dict], TomoData]] = {
     # Data Transforms
     "crop": op_crop,
     "downsample": op_downsample,
-    "remove_outlier": op_remove_outlier,
     "median_filter": op_median_filter,
+    "gaussian_filter": op_gaussian_filter,
+    "wiener_filter": op_wiener_filter,
     # Pre-processing
     "normalize": op_normalize,
     "normalize_bg": op_normalize_bg,
