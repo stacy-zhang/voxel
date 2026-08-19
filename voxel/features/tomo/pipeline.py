@@ -412,6 +412,28 @@ def op_add_jitter(data: TomoData, params: dict) -> TomoData:
         out = out[0]
     return data.with_(prj=out)
 
+# ===========================================================================
+# Visualization
+# ===========================================================================
+# placeholders
+def op_volume(data: TomoData, params:dict) -> TomoData:
+    return data
+
+def op_outline_box(data: TomoData, params:dict) -> TomoData:
+    return data
+
+def op_scale_cube(data: TomoData, params:dict) -> TomoData:
+    return data
+
+def op_ortho_slices(data: TomoData, params:dict) -> TomoData:
+    return data
+
+def op_clip(data: TomoData, params:dict) -> TomoData:
+    return data
+
+def op_background(data: TomoData, params:dict) -> TomoData:
+    
+    return data
 
 # ---------------------------------------------------------------------------
 # Operator registry + runner
@@ -448,6 +470,13 @@ OP_FUNCS: dict[str, Callable[[TomoData, dict], TomoData]] = {
     # Simulation
     "add_noise": op_add_noise,
     "add_jitter": op_add_jitter,
+    # Visualization
+    "volume": op_volume,
+    "outline_box": op_outline_box,
+    "scale_cube": op_scale_cube,
+    "ortho_slices": op_ortho_slices,
+    "clip": op_clip,
+    "background": op_background,
 }
 
 
