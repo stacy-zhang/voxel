@@ -31,6 +31,9 @@ trame-server = "*"
 tiled = ">=0.2.14,<0.3"
 pipreqs = ">=0.5.0,<0.6"
 trame-vuetify = ">=3.2.5,<4"
+tomopy = ">=1.14.4,<2"
+dxchange = ">=0.1.8,<0.2"
+matplotlib = ">=3.11.0,<4"
 
 [pypi-dependencies]
 vtkplotlib = ">=2.1.1, <3"

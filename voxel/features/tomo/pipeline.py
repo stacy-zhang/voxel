@@ -34,7 +34,13 @@ from dataclasses import dataclass, replace, field
 from typing import Any, Callable, Optional
 
 import numpy as np
+import tomopy
+import dxchange
+import matplotlib.pyplot as plt
+import logging
 
+# set up logging to monitor reconstruction process
+logging.basicConfig(level=logging.INFO) 
 
 # ---------------------------------------------------------------------------
 # Dataset container
@@ -137,35 +143,35 @@ def op_crop(data: TomoData, params: dict) -> TomoData:
 
 def op_downsample(data: TomoData, params: dict) -> TomoData:
     """Bin projections by ``2**level`` along ``axis`` (tomopy.misc.morph.downsample)."""
-    from tomopy.misc.morph import downsample
+    #from tomopy.misc.morph import downsample
 
     prj = _require_prj(data)
     level = _i(params, "level", 1) or 0
     axis = _i(params, "axis", 2) or 0
-    return data.with_(prj=downsample(prj, level=level, axis=axis))
+    return data.with_(prj=tomopy.misc.morph.downsample(prj, level=level, axis=axis))
 
 
 def op_median_filter(data: TomoData, params: dict) -> TomoData:
     """Median-filter each projection (tomopy.misc.corr.median_filter)."""
-    from tomopy.misc.corr import median_filter
+    #from tomopy.misc.corr import median_filter
 
     prj = _require_prj(data)
     size = _i(params, "size", 3) or 3
     axis = _i(params, "axis", 0)
-    return data.with_(prj=median_filter(prj, size=size, axis=axis))
+    return data.with_(prj=tomopy.misc.corr.median_filter(prj, size=size, axis=axis))
 
 def op_gaussian_filter(data: TomoData, params: dict) -> TomoData:
     """Gaussian-filter each projection (tomopy.misc.corr.gaussian_filter)."""
-    from tomopy.misc.corr import gaussian_filter
+    #from tomopy.misc.corr import gaussian_filter
 
     prj = _require_prj(data)
     sigma = _f(params, "sigma", 2.0) or 2.0
     axis = _i(params, "axis", 0)
-    return data.with_(prj=gaussian_filter(prj, sigma=sigma, axis=axis))
+    return data.with_(prj=tomopy.misc.corr.gaussian_filter(prj, sigma=sigma, axis=axis))
 
 def op_wiener_filter(data: TomoData, params: dict) -> TomoData:
     """Wiener-filter each projection (tomopy.misc.corr.wiener_filter)."""
-    from tomopy.misc.corr import wiener_filter
+    #from tomopy.misc.corr import wiener_filter
 
     prj = _require_prj(data)
     sigma_x = _f(params, "sigma_x", 0.5) or 0.5
@@ -173,7 +179,7 @@ def op_wiener_filter(data: TomoData, params: dict) -> TomoData:
     sigma_z = _f(params, "sigma_z", 0.5) or 0.5
     snr = _f(params, "snr", 15.0) or 15.0
     axis = _i(params, "axis", 0)
-    return data.with_(prj=wiener_filter(prj, sigma_x=sigma_x, sigma_y=sigma_y, sigma_z=sigma_z, snr=snr, axis=axis))
+    return data.with_(prj=tomopy.misc.corr.wiener_filter(prj, sigma_x=sigma_x, sigma_y=sigma_y, sigma_z=sigma_z, snr=snr, axis=axis))
 
 
 # ===========================================================================
@@ -185,7 +191,7 @@ def op_normalize(data: TomoData, params: dict) -> TomoData:
     Requires ``flat`` and ``dark`` on the dataset; raises otherwise so the user
     gets a clear message instead of a silent no-op.
     """
-    from tomopy.prep.normalize import normalize
+    #from tomopy.prep.normalize import normalize
 
     prj = _require_prj(data)
     if data.flat is None or data.dark is None:
@@ -193,45 +199,45 @@ def op_normalize(data: TomoData, params: dict) -> TomoData:
             "Normalize needs flat and dark fields; none were loaded with this dataset."
         )
     cutoff = _f(params, "cutoff", None)
-    out = normalize(prj, np.asarray(data.flat), np.asarray(data.dark), cutoff=cutoff)
+    out = tomopy.prep.normalize.normalize(prj, np.asarray(data.flat), np.asarray(data.dark), cutoff=cutoff)
     return data.with_(prj=out)
 
 
 def op_normalize_bg(data: TomoData, params: dict) -> TomoData:
     """Background (air) normalization (tomopy.prep.normalize.normalize_bg)."""
-    from tomopy.prep.normalize import normalize_bg
+    #from tomopy.prep.normalize import normalize_bg
 
     prj = _require_prj(data)
     air = _i(params, "air", 1) or 1
-    return data.with_(prj=normalize_bg(prj, air=air))
+    return data.with_(prj=tomopy.prep.normalize.normalize_bg(prj, air=air))
 
 
 def op_minus_log(data: TomoData, params: dict) -> TomoData:
     """Transmission -> attenuation, i.e. ``-log`` (tomopy.prep.normalize.minus_log)."""
-    from tomopy.prep.normalize import minus_log
+    #from tomopy.prep.normalize import minus_log
 
     prj = _require_prj(data)
-    return data.with_(prj=minus_log(prj))
+    return data.with_(prj=tomopy.prep.normalize.minus_log(prj))
 
 
 def op_remove_stripe(data: TomoData, params: dict) -> TomoData:
     """Fourier-wavelet ring/stripe removal (tomopy.prep.stripe.remove_stripe_fw)."""
-    from tomopy.prep.stripe import remove_stripe_fw
+    #from tomopy.prep.stripe import remove_stripe_fw
 
     prj = _require_prj(data)
     level = _i(params, "level", None)          # None -> TomoPy auto
     wname = _s(params, "wname", "db5") or "db5"
     sigma = _f(params, "sigma", 2.0)
-    out = remove_stripe_fw(prj, level=level, wname=wname, sigma=sigma, pad=True)
+    out = tomopy.prep.stripe.remove_stripe_fw(prj, level=level, wname=wname, sigma=sigma, pad=True)
     return data.with_(prj=out)
 
 
 def op_retrieve_phase(data: TomoData, params: dict) -> TomoData:
     """Paganin single-material phase retrieval (tomopy.prep.phase.retrieve_phase)."""
-    from tomopy.prep.phase import retrieve_phase
+    #from tomopy.prep.phase import retrieve_phase
 
     prj = _require_prj(data)
-    out = retrieve_phase(
+    out = tomopy.prep.phase.retrieve_phase(
         prj,
         pixel_size=_f(params, "pixel_size", 1e-4),
         dist=_f(params, "dist", 50.0),
@@ -250,7 +256,6 @@ def op_set_angles(data: TomoData, params: dict) -> TomoData:
     Number of angles is taken from the projection stack so it always matches.
     """
     prj = _require_prj(data)
-    import tomopy
 
     nang = prj.shape[0]
     ang1 = _f(params, "ang1", 0.0)
@@ -264,9 +269,9 @@ def op_set_angles(data: TomoData, params: dict) -> TomoData:
 def _align(data: TomoData, params: dict, joint: bool) -> TomoData:
     prj = _require_prj(data)
     ang = _require_ang(data)
-    from tomopy.prep.alignment import align_joint, align_seq
+    #from tomopy.prep.alignment import align_joint, align_seq
 
-    fn = align_joint if joint else align_seq
+    fn = tomopy.prep.alignment.align_joint if joint else tomopy.prep.alignment.align_seq
     prj_out, err = fn(
         prj,
         ang,
@@ -294,21 +299,21 @@ def op_align_joint(data: TomoData, params: dict) -> TomoData:
 
 def op_shift_images(data: TomoData, params: dict) -> TomoData:
     """Rigidly shift every projection by ``(sx, sy)`` (tomopy.prep.alignment.shift_images)."""
-    from tomopy.prep.alignment import shift_images
+    #from tomopy.prep.alignment import shift_images
 
     prj = _require_prj(data)
     sx = _f(params, "sx", 0.0)
     sy = _f(params, "sy", 0.0)
     # shift_images shifts in place and returns the array.
-    return data.with_(prj=shift_images(prj.copy(), sx, sy))
+    return data.with_(prj=tomopy.prep.alignment.shift_images(prj.copy(), sx, sy))
 
 
 def op_scale(data: TomoData, params: dict) -> TomoData:
     """Linearly scale projections into ``[-1, 1]`` (tomopy.prep.alignment.scale)."""
-    from tomopy.prep.alignment import scale
+    #from tomopy.prep.alignment import scale
 
     prj = _require_prj(data)
-    out = scale(prj)
+    out = tomopy.prep.alignment.scale(prj)
     # scale() returns (prj_scaled, scl_factor) in some versions; keep the array.
     if isinstance(out, tuple):
         out = out[0]
@@ -317,12 +322,12 @@ def op_scale(data: TomoData, params: dict) -> TomoData:
 
 def op_blur_edges(data: TomoData, params: dict) -> TomoData:
     """Blur projection edges before registration (tomopy.prep.alignment.blur_edges)."""
-    from tomopy.prep.alignment import blur_edges
+    #from tomopy.prep.alignment import blur_edges
 
     prj = _require_prj(data)
     low = _f(params, "low", 0.0)
     high = _f(params, "high", 0.8)
-    return data.with_(prj=blur_edges(prj, low, high))
+    return data.with_(prj=tomopy.prep.alignment.blur_edges(prj, low, high))
 
 
 # ===========================================================================
@@ -332,20 +337,20 @@ def op_find_center(data: TomoData, params: dict) -> TomoData:
     """Entropy-based rotation-center search (tomopy.recon.rotation.find_center)."""
     prj = _require_prj(data)
     ang = _require_ang(data)
-    from tomopy.recon.rotation import find_center
+    #from tomopy.recon.rotation import find_center
 
     init = _f(params, "init", None)
     tol = _f(params, "tol", 0.5)
-    center = float(find_center(prj, ang, init=init, tol=tol))
+    center = float(tomopy.recon.rotation.find_center(prj, ang, init=init, tol=tol))
     return data.with_(center=center)
 
 
 def op_find_center_vo(data: TomoData, params: dict) -> TomoData:
     """Automatic rotation-center detection, Vo's method (find_center_vo)."""
     prj = _require_prj(data)
-    from tomopy.recon.rotation import find_center_vo
+    #from tomopy.recon.rotation import find_center_vo
 
-    center = float(find_center_vo(prj))
+    center = float(tomopy.recon.rotation.find_center_vo(prj))
     return data.with_(center=center)
 
 
@@ -358,7 +363,6 @@ def op_recon(data: TomoData, params: dict) -> TomoData:
     """
     prj = _require_prj(data)
     ang = _require_ang(data)
-    import tomopy
 
     algorithm = _s(params, "algorithm", "gridrec") or "gridrec"
     center = _f(params, "center", None)
@@ -380,11 +384,11 @@ def op_circ_mask(data: TomoData, params: dict) -> TomoData:
     """Zero the volume outside an inscribed cylinder (tomopy.misc.corr.circ_mask)."""
     if data.recon is None:
         raise ValueError("Circular mask needs a reconstructed volume; run Reconstruct first.")
-    from tomopy.misc.corr import circ_mask
+    #from tomopy.misc.corr import circ_mask
 
     axis = _i(params, "axis", 0) or 0
     ratio = _f(params, "ratio", 1.0)
-    return data.with_(recon=circ_mask(data.recon, axis=axis, ratio=ratio))
+    return data.with_(recon=tomopy.misc.corr.circ_mask(data.recon, axis=axis, ratio=ratio))
 
 
 # ===========================================================================
@@ -392,21 +396,21 @@ def op_circ_mask(data: TomoData, params: dict) -> TomoData:
 # ===========================================================================
 def op_add_noise(data: TomoData, params: dict) -> TomoData:
     """Add Gaussian noise as a ratio of the max (tomopy.prep.alignment.add_noise)."""
-    from tomopy.prep.alignment import add_noise
+    #from tomopy.prep.alignment import add_noise
 
     prj = _require_prj(data)
     ratio = _f(params, "ratio", 0.05)
-    return data.with_(prj=add_noise(prj, ratio=ratio))
+    return data.with_(prj=tomopy.prep.alignment.add_noise(prj, ratio=ratio))
 
 
 def op_add_jitter(data: TomoData, params: dict) -> TomoData:
     """Add random per-projection jitter (tomopy.prep.alignment.add_jitter)."""
-    from tomopy.prep.alignment import add_jitter
+    #from tomopy.prep.alignment import add_jitter
 
     prj = _require_prj(data)
     low = _f(params, "low", 0.0)
     high = _f(params, "high", 1.0)
-    out = add_jitter(prj, low=low, high=high)
+    out = tomopy.prep.alignment.add_jitter(prj, low=low, high=high)
     # add_jitter returns (prj, shift arrays) in some versions; keep the stack.
     if isinstance(out, tuple):
         out = out[0]
@@ -432,7 +436,6 @@ def op_clip(data: TomoData, params:dict) -> TomoData:
     return data
 
 def op_background(data: TomoData, params:dict) -> TomoData:
-    
     return data
 
 # ---------------------------------------------------------------------------
