@@ -715,7 +715,9 @@ def create_tomo_server():
 
     @state.change("show_outline")
     def _on_outline(show_outline, **_kw):
-        outline_actor.SetVisibility(bool(show_outline))
+        # Only show the outline once data is loaded; otherwise outline_filter has
+        # no input and VTK's demand-driven pipeline errors on every render.
+        outline_actor.SetVisibility(bool(show_outline) and bool(state.loaded))
         _view_update()
 
     @state.change("slice_x_min", "slice_x_max",
