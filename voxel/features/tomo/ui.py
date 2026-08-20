@@ -68,7 +68,7 @@ FILE_OPS = [
                 "name": "data_type",
                 "label": "Data Type",
                 "type": "choice",
-                "default": "Tilt Series",
+                "default": "Volume",
                 "choices": ["Tilt Series", "Volume"],
             },
         ],
@@ -100,7 +100,7 @@ DATA_TRANSFORM_OPS = [
         "label": "Downsample (Bin)",
         "params": [
             {"name": "level", "label": "Bin level (2^n)", "type": "int", "default": 1},
-            {"name": "axis", "label": "Axis", "type": "int", "default": 2},
+            {"name": "axis", "label": "Axis", "type": "choice", "default": "All Axes (Uniform)", "choices": ["All Axes (Uniform)", "Projection Angles", "Vertical Detector Height", "Horizontal Detector Width"]},
         ],
     },
     {
@@ -437,21 +437,21 @@ def _pipeline_body(ctx):
                     icon=("block.enabled ? 'mdi-eye' : 'mdi-eye-off'",),
                     size="x-small",
                     variant="text",
-                    click_stop=(ctrl.tomo_toggle_op, "[block.id]"),
+                    v_on_click_stop=(ctrl.tomo_toggle_op, "[block.id]"),
                     title="Enable / disable",
                 )
                 v3.VBtn(
                     icon="mdi-arrow-up",
                     size="x-small",
                     variant="text",
-                    click_stop=(ctrl.tomo_move_op, "[block.id, -1]"),
+                    v_on_click_stop=(ctrl.tomo_move_op, "[block.id, -1]"),
                     title="Move up",
                 )
                 v3.VBtn(
                     icon="mdi-arrow-down",
                     size="x-small",
                     variant="text",
-                    click_stop=(ctrl.tomo_move_op, "[block.id, 1]"),
+                    v_on_click_stop=(ctrl.tomo_move_op, "[block.id, 1]"),
                     title="Move down",
                 )
                 v3.VBtn(
@@ -459,7 +459,7 @@ def _pipeline_body(ctx):
                     size="x-small",
                     variant="text",
                     color="error",
-                    click_stop=(ctrl.tomo_remove_op, "[block.id]"),
+                    v_on_click_stop=(ctrl.tomo_remove_op, "[block.id]"),
                     title="Delete",
                 )
     v3.VBtn(

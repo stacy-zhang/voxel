@@ -127,6 +127,11 @@ class TomographyFeature(VoxelFeature):
                 params.append(entry)
             state.selected_op_params = params
 
+        # Sync properties panel to the selected block
+        @state.change("selected_op_id")
+        def _on_selected_op_change(**_kw):
+            _sync_selected_params()
+
         @ctrl.set("tomo_add_op")
         def tomo_add_op(op_id, label=None, params=None):
             spec = tomo_ui.TOMO_OPS.get(op_id)

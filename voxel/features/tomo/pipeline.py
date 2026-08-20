@@ -143,12 +143,14 @@ def op_crop(data: TomoData, params: dict) -> TomoData:
 
 def op_downsample(data: TomoData, params: dict) -> TomoData:
     """Bin projections by ``2**level`` along ``axis`` (tomopy.misc.morph.downsample)."""
-    #from tomopy.misc.morph import downsample
+
+    axes = {"All Axes (Uniform)": [0,1,2], "Projection Angles": [0], "Vertical Detector Height": [1], "Horizontal Detector Width": [2]}
 
     prj = _require_prj(data)
     level = _i(params, "level", 1) or 0
-    axis = _i(params, "axis", 2) or 0
-    return data.with_(prj=tomopy.misc.morph.downsample(prj, level=level, axis=axis))
+    for axis in axes.get(params.get("axis")):
+        prj=tomopy.misc.morph.downsample(prj, level=level, axis=axis)
+    return data.with_(prj=prj)
 
 
 def op_median_filter(data: TomoData, params: dict) -> TomoData:
