@@ -366,7 +366,15 @@ def op_recon(data: TomoData, params: dict) -> TomoData:
     prj = _require_prj(data)
     ang = _require_ang(data)
 
-    algorithm = _s(params, "algorithm", "gridrec") or "gridrec"
+    algs = {
+        "Fourier Grid": "gridrec",
+        "Filtered Back-Projection": "fbp",
+        "Algebraic (ART)": "art",
+        "Simultaneous Iterative (SIRT)": "sirt",
+        "Maximum-Likelihood Expectation Maximization (MLEM)": "mlem",
+        "Total Variation (TV)": "tv",
+    }
+    algorithm = algs.get(_s(params, "algorithm", "Fourier Grid")) or "gridrec"
     center = _f(params, "center", None)
     if center is None:
         center = data.center if data.center is not None else prj.shape[2] / 2.0
