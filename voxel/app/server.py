@@ -237,10 +237,7 @@ def create_server():
     ## volume's origin corner -- a visual orientation guide, mirrors napari)
     state.setdefault("world_axes_show", True)
 
-    ## phi = 0 reference plane: a translucent quad marking where the
-    ## diffractometer's phi = 0 sample orientation lands in the reconstructed
-    ## volume -- the Qx-Qz plane (Qy = 0, i.e. the world x-z plane)
-    state.setdefault("phi0_show", True)
+    state.setdefault("phi0_show", False)
 
     ## cylindrical slicing (Q space only)
     state.setdefault("cyl_show", False)
@@ -588,8 +585,8 @@ def create_server():
     phi0_actor.GetProperty().SetOpacity(0.15)
     phi0_actor.GetProperty().LightingOff()
     phi0_actor.GetProperty().SetBackfaceCulling(0)  # visible from both sides
-    phi0_actor.PickableOff()
-    phi0_actor.VisibilityOff()
+    phi0_actor.PickableOff() # cannot be clicked, highlighted, or selected
+    phi0_actor.VisibilityOff() # initially hidden
     renderer.AddActor(phi0_actor)
 
     # Bright, opaque border tracing the same 4 corners so the plane's extent
@@ -1676,7 +1673,8 @@ def create_server():
         corner by a leader line. The z world axis is mirrored in
         ``_set_volume_data`` (world z = -Qz), so the corners use -Qz.
         """
-        show = bool(getattr(state, "phi0_show", False))
+        is_cms = (_ensure_path(state.loader_mode).upper() or "CMS") == "CMS"
+        show = is_cms and bool(getattr(state, "phi0_show", False))
         if current_image is None or current_axes is None or not show:
             phi0_actor.VisibilityOff()
             phi0_border_actor.VisibilityOff()
@@ -1716,7 +1714,7 @@ def create_server():
 
         is_q = (_ensure_path(getattr(state, "space", "q")) or "q").lower() == "q"
         mid = "Qy" if is_q else "K"
-        phi0_label.SetInput(f"phi = 0  ({mid} = 0)")
+        phi0_label.SetInput(f"phi = 0")
         phi0_label.SetPosition(*label_pos)
 
         phi0_actor.VisibilityOn()
@@ -3044,7 +3042,10 @@ def create_server():
         """List the layers present in the 3D volume view (volume + active slices)."""
         if bool(getattr(state, "intensity_slider_show", False)):
             return  # the intensity view manages its own layer list
-        items = [("volume", "RSM Volume"), ("outline", "Outline Box"), ("coords", "Coordinates"), ("world_axes", "World Axes"), ("phi0", "\u03c6 = 0 Plane")]
+        items = [("volume", "RSM Volume"), ("outline", "Outline Box"), ("coords", "Coordinates"), ("world_axes", "World Axes")]
+        # The phi = 0 plane is a CMS-only reference layer.
+        if (_ensure_path(state.loader_mode).upper() or "CMS") == "CMS":
+            items.append(("phi0", "\u03c6 = 0 Plane"))
         for ax, lbl in (("x", "Slice X"), ("y", "Slice Y"), ("z", "Slice Z")):
             if slice_actors[ax].GetVisibility():
                 items.append((f"slice_{ax}", lbl))
