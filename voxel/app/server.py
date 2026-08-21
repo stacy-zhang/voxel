@@ -865,6 +865,9 @@ def create_server():
     # The vtkImageData built for display (log/contrast-scaled) — referenced by
     # the slicing/probe helpers in the Analyze tab.
     current_image = None
+    # Camera framing capturing the initial framing of the volume so
+    # the "Navigate to Volume" button can restore that view
+    initial_camera_state = None
     # Robust display range (log-scaled) used to build the transfer functions.
     render_range = None
     # In-flight asyncio task, tracked so the Stop button can cancel it.
@@ -2022,8 +2025,34 @@ def create_server():
     def regrid(**kwargs):
         _track(_do_regrid())
 
+    def _capture_camera_state():
+        """Snapshot the current camera framing (position/orientation/zoom)."""
+        cam = renderer.GetActiveCamera()
+        return {
+            "position": cam.GetPosition(),
+            "focal_point": cam.GetFocalPoint(),
+            "view_up": cam.GetViewUp(),
+            "parallel_scale": cam.GetParallelScale(),
+            "parallel_projection": bool(cam.GetParallelProjection()),
+            "view_angle": cam.GetViewAngle(),
+        }
+
+    def _restore_camera_state(snapshot):
+        """Restore a camera framing captured by ``_capture_camera_state``."""
+        if not snapshot:
+            return
+        cam = renderer.GetActiveCamera()
+        cam.SetParallelProjection(snapshot["parallel_projection"])
+        cam.SetPosition(*snapshot["position"])
+        cam.SetFocalPoint(*snapshot["focal_point"])
+        cam.SetViewUp(*snapshot["view_up"])
+        cam.SetParallelScale(snapshot["parallel_scale"])
+        cam.SetViewAngle(snapshot["view_angle"])
+        renderer.ResetCameraClippingRange()
+
     @ctrl.set("view_rsm")
     def view_rsm(**kwargs):
+        nonlocal initial_camera_state
         if regrid_volume is None or regrid_axes is None:
             _set_status("Error: Regrid first.")
             return
@@ -2035,7 +2064,21 @@ def create_server():
         state.contrast_lo = 1.0
         state.contrast_hi = 99.8
         _set_volume_data(regrid_volume, regrid_axes)
+        # Remember this view framing so "Navigate to Volume" can return
+        # to it later without touching any parameters the user changes.
+        initial_camera_state = _capture_camera_state()
         _set_status("RSM volume displayed.")
+
+    @ctrl.set("navigate_to_volume")
+    def navigate_to_volume(**kwargs):
+        if current_volume is None or initial_camera_state is None:
+            _set_status("Error: View an RSM volume first.")
+            return
+        _restore_camera_state(initial_camera_state)
+        render_window.Render()
+        if remote_view is not None:
+            remote_view.update()
+        _set_status("View reset to the volume framing.")
 
     # ---------------------------------------------------------------------
     # Intensity ROI selector helpers
@@ -3794,6 +3837,21 @@ def create_server():
                     "font-family:sans-serif;"
                 ),
             ):
+                html.Button(
+                    "Navigate to Volume",
+                    v_show="!intensity_slider_show",
+                    click=ctrl.navigate_to_volume,
+                    style=(
+                        "width:100%; margin-bottom:12px; margin-top:12px; padding:8px 12px; "
+                        "cursor:pointer; background:#2a2a2e; color:#dddddd; "
+                        "border:1px solid #44444a; border-radius:6px; "
+                        "font-size:0.85rem;"
+                    ),
+                )
+                html.Hr(v_show="!intensity_slider_show", 
+                        style="border-color:#2a2a2e; margin:6px 0 12px;"
+                )
+
                 # Feature-specific per-layer property editors (volume /
                 # slice / cylinder / sphere ...). Provided by the active
                 # feature so a future tomography feature can supply its own.
