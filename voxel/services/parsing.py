@@ -52,6 +52,32 @@ def _scan_numbers_in_dir_CMS(tiff_dir: Optional[str]) -> list:
             scans.append(int(match.group(1)))
     return sorted(scans)
 
+
+# phi angle embedded in the filenames, e.g. "..._phi-130.000_..." or
+# "..._phi12.500_...".
+PHI_ANGLE_REGEX = r"phi[-_]?(-?\d+(?:\.\d+)?)"
+
+def _phi_angles_in_dir_CMS(tiff_dir: Optional[str]) -> list:
+    """Return the phi angles (degrees) parsed from TIFF filenames in ``tiff_dir``.
+
+    Some CMS datasets encode the sample phi orientation in the file names (see
+    ``PHI_ANGLE_REGEX``). These angles fix where the phi = 0 reference plane
+    lies; without them the plane defaults to the Qx-Qz plane (Qy = 0). Returns
+    the angles in filename (sorted) order; files with no phi token are skipped.
+    """
+    directory = Path(_ensure_path(tiff_dir)).expanduser()
+    if not directory.is_dir():
+        return []
+    pattern = re.compile(PHI_ANGLE_REGEX, re.IGNORECASE)
+    angles = []
+    for path in sorted(
+        list(directory.glob("*.tif")) + list(directory.glob("*.tiff"))
+    ):
+        match = pattern.search(path.name)
+        if match:
+            angles.append(float(match.group(1)))
+    return angles
+
 def _scan_numbers_in_dir_ISR(tiff_dir: Optional[str]) -> list:
     """Return the scan and data numbers parsed from TIFF filenames in ``tiff_dir`` as tuples (scan_number, data_number)."""
     

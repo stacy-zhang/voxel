@@ -77,6 +77,7 @@ from voxel.services.parsing import (
     _ensure_path,
     _scan_numbers_in_dir_CMS,
     _scan_numbers_in_dir_ISR,
+    _phi_angles_in_dir_CMS,
     _parse_scan_list,
     _parse_ub_matrix,
     _format_ub_matrix,
@@ -237,7 +238,11 @@ def create_server():
     ## volume's origin corner -- a visual orientation guide, mirrors napari)
     state.setdefault("world_axes_show", True)
 
-    state.setdefault("phi0_show", False)
+    state.setdefault("phi0_show", True)
+    # phi = 0 reference azimuth (degrees). If the CMS filenames include a
+    # phi angle it is stored here so the phi = 0 plane rotates about the vertical
+    # (Qz) axis to match; 0.0 keeps the plane on the Qx-Qz plane.
+    state.setdefault("phi0_ref_deg", 0.0)
 
     ## cylindrical slicing (Q space only)
     state.setdefault("cyl_show", False)
@@ -1666,13 +1671,12 @@ def create_server():
     renderer.AddObserver("StartEvent", _update_scale_bar)
 
     def _update_phi0_plane():
-        """Draw the phi = 0 reference plane (the Qx-Qz / Qy=0 plane).
+        """Draw the phi = 0 reference plane.
 
         Marks where the diffractometer's phi = 0 sample orientation maps into
-        the reconstructed volume: the world x-z plane at Qy = 0. The quad is
-        extended 15% beyond the volume's Qx and Qz extents so its bright
-        border stays visible even where the opaque volume covers the middle. A
-        "phi = 0" label sits off to the +Qx side and is tied to the plane's
+        the reconstructed volume. By default this is the world x-z plane at
+        Qy = 0. When the CMS filenames include a phi angle (``phi0_ref_deg``) 
+        the plane is rotated by that angle about the Qz axis.
         corner by a leader line. The z world axis is mirrored in
         ``_set_volume_data`` (world z = -Qz), so the corners use -Qz.
         """
@@ -1701,23 +1705,31 @@ def create_server():
         ex_lo, ex_hi = x_lo - mx, x_hi + mx
         ez_lo, ez_hi = z_lo - mz, z_hi + mz
 
-        phi0_pts.SetPoint(0, ex_lo, y, ez_lo)
-        phi0_pts.SetPoint(1, ex_hi, y, ez_lo)
-        phi0_pts.SetPoint(2, ex_hi, y, ez_hi)
-        phi0_pts.SetPoint(3, ex_lo, y, ez_hi)
+        # Rotate the phi0 plane about Qz axis (through the origin) by the sample 
+        # phi read from the filenames. Qx/Qy map straight to world x/y, 
+        # so the in-plane rotation is unaffected by the z mirror.
+        phi_rad = math.radians(_float(getattr(state, "phi0_ref_deg", 0.0), 0.0))
+        cos_p, sin_p = math.cos(phi_rad), math.sin(phi_rad)
+
+        def _rot(x, z):
+            # corner lies at Qy = 0, so y = x * sin(phi) after the rotation
+            return (x * cos_p, x * sin_p, z)
+
+        phi0_pts.SetPoint(0, *_rot(ex_lo, ez_lo))
+        phi0_pts.SetPoint(1, *_rot(ex_hi, ez_lo))
+        phi0_pts.SetPoint(2, *_rot(ex_hi, ez_hi))
+        phi0_pts.SetPoint(3, *_rot(ex_lo, ez_hi))
         phi0_pts.Modified()
 
-        # Label off to the side (beyond the +Qx / top corner), tied back to the
-        # plane's top-right corner by a leader line.
-        anchor = (ex_hi, y, ez_hi)
-        label_pos = (ex_hi + 0.1 * span_x, y, ez_hi + 0.1 * span_z)
+        # Label off to the side, connected to the
+        # plane's rotated top-right corner by a leader line.
+        anchor = _rot(ex_hi, ez_hi)
+        label_pos = _rot(ex_hi + 0.1 * span_x, ez_hi + 0.1 * span_z)
         phi0_leader_pts.SetPoint(0, *anchor)
         phi0_leader_pts.SetPoint(1, *label_pos)
         phi0_leader_pts.Modified()
 
-        is_q = (_ensure_path(getattr(state, "space", "q")) or "q").lower() == "q"
-        mid = "Qy" if is_q else "K"
-        phi0_label.SetInput(f"phi = 0")
+        phi0_label.SetInput("phi = 0")
         phi0_label.SetPosition(*label_pos)
 
         phi0_actor.VisibilityOn()
@@ -1911,6 +1923,11 @@ def create_server():
             # Reflect the loaded UB into the editable Build-tab field.
             if ub is not None:
                 state.ub_matrix = _format_ub_matrix(ub)
+
+            phi_angles = (
+                _phi_angles_in_dir_CMS(tiff_dir) if loader_mode == "CMS" else []
+            )
+            state.phi0_ref_deg = float(phi_angles[0]) if phi_angles else 0.0
             n = len(frames) if frames else 0
             _set_status(f"Data loaded ({n} frame(s)). Ready to build.")
             _stop_progress(success=True)
