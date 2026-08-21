@@ -251,6 +251,9 @@ def create_tomo_server():
     state.setdefault("browser_items", [])  # list[dict] shown in the dialog list
     state.setdefault("browser_selected", [])  # currently highlighted item(s)
 
+    # "Select data type" dialog shown after a file is chosen in the browser.
+    state.setdefault("data_type_open", False)
+
     _baseline_opacity: list[tuple[float, float, float, float]] = []
     _active_reader = None  # prevent reader from being garbage-collected
     _data_range = (0.0, 1.0)  # raw scalar range of the loaded data
@@ -260,6 +263,8 @@ def create_tomo_server():
     # "result" caches the last pipeline output; "browse_target" routes a
     # file-browser pick into a specific pipeline block param (see _fb_open).
     _pipeline_io: dict = {}
+
+    _DATA_TYPE_KIND = {"Volume": "volume", "Tilt Series": "tilt_series"}
 
 
     def _update_clip_planes():
@@ -636,9 +641,26 @@ def create_tomo_server():
             except ValueError:
                 pass
         else:
-            # Pipeline block for the open data action
-            ctrl.tomo_add_op("open_data", label="Data", params={"path": chosen})
-            load_data(chosen)
+            # Don't load until user selects data type, Open Data block is added afterward.
+            _pipeline_io["pending_open_path"] = chosen
+            state.data_type_open = True
+
+    def choose_data_type(data_type):
+        """Finish opening a file after the user picks Volume / Tilt Series.
+
+        Adds the Open Data pipeline block with the chosen ``data_type`` (shown in
+        the Properties panel, where it stays editable); the ``pipeline`` change
+        watcher then loads the file with the matching kind.
+        """
+        path = _pipeline_io.pop("pending_open_path", None)
+        state.data_type_open = False
+        if not path:
+            return
+        ctrl.tomo_add_op(
+            "open_data",
+            label="Data",
+            params={"path": path, "data_type": data_type},
+        )
 
     def browser_cancel():
         _pipeline_io.pop("browse_target", None)
@@ -648,6 +670,7 @@ def create_tomo_server():
     ctrl.browser_navigate = browser_navigate
     ctrl.browser_go_up = browser_go_up
     ctrl.browser_confirm = browser_confirm
+    ctrl.choose_data_type = choose_data_type
     ctrl.browser_cancel = browser_cancel
 
     # Opacity preset curves
@@ -814,8 +837,30 @@ def create_tomo_server():
             except Exception as exc:  # noqa: BLE001
                 return
 
+    def _maybe_reload_base():
+        """Reload the base dataset when the Open Data block's path/type changes.
+
+        Driving the load off pipeline state means changing the Data Type in the
+        Properties dropdown (or the initial "Select data type" dialog) re-reads
+        the file with the matching kind.
+        """
+        block = next((b for b in state.pipeline if b.get("op") == "open_data"), None)
+        if block is None:
+            return
+        path = block["params"].get("path")
+        if not path:
+            return
+        kind = _DATA_TYPE_KIND.get(block["params"].get("data_type"), "tilt_series")
+        if (_pipeline_io.get("loaded_path") == path
+                and _pipeline_io.get("loaded_kind") == kind):
+            return
+        _pipeline_io["loaded_path"] = path
+        _pipeline_io["loaded_kind"] = kind
+        load_data(path, kind=kind)
+
     @state.change("pipeline")
     def _auto_run_pipeline(**_kw):
+        _maybe_reload_base()
         if _pipeline_io.get("base") is not None:
             tomo_run_pipeline()
 
@@ -976,6 +1021,27 @@ def create_tomo_server():
                         variant="flat",
                         disabled=("browser_selected.length === 0",),
                         click=ctrl.browser_confirm,
+                    )
+
+        with v3.VDialog(
+            v_model=("data_type_open",),
+            max_width=320,
+            persistent=True,
+        ):
+            with v3.VCard():
+                v3.VCardTitle("Select data type", classes="text-center")
+                with v3.VCardActions(classes="justify-center pb-4 ga-2"):
+                    v3.VBtn(
+                        "Volume",
+                        color="primary",
+                        variant="tonal",
+                        click=(ctrl.choose_data_type, "['Volume']"),
+                    )
+                    v3.VBtn(
+                        "Tilt Series",
+                        color="primary",
+                        variant="tonal",
+                        click=(ctrl.choose_data_type, "['Tilt Series']"),
                     )
 
     return server
