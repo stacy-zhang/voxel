@@ -142,14 +142,22 @@ def op_crop(data: TomoData, params: dict) -> TomoData:
 
 
 def op_downsample(data: TomoData, params: dict) -> TomoData:
-    """Bin projections by ``2**level`` along ``axis`` (tomopy.misc.morph.downsample)."""
+    """Bin volumes by x2 along all axes (tomopy.misc.morph.downsample)."""
 
     axes = {"All Axes (Uniform)": [0,1,2], "Projection Angles": [0], "Vertical Detector Height": [1], "Horizontal Detector Width": [2]}
 
     prj = _require_prj(data)
-    level = _i(params, "level", 1) or 0
-    for axis in axes.get(params.get("axis")):
-        prj=tomopy.misc.morph.downsample(prj, level=level, axis=axis)
+    for axis in axes.get(params.get('axis')):
+        prj=tomopy.misc.morph.downsample(prj, level=1, axis=axis)
+    return data.with_(prj=prj)
+
+
+def op_resample(data: TomoData, params: dict) -> TomoData:
+    """Bin tilt series x2 along X and Y image dimensions (tomopy.misc.morph.downsample)."""
+
+    prj = _require_prj(data)
+    for axis in [1,2]:
+        prj=tomopy.misc.morph.downsample(prj, level=1, axis=axis)
     return data.with_(prj=prj)
 
 
@@ -458,6 +466,7 @@ OP_FUNCS: dict[str, Callable[[TomoData, dict], TomoData]] = {
     # Data Transforms
     "crop": op_crop,
     "downsample": op_downsample,
+    "resample": op_resample,
     "median_filter": op_median_filter,
     "gaussian_filter": op_gaussian_filter,
     "wiener_filter": op_wiener_filter,

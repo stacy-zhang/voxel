@@ -97,12 +97,19 @@ DATA_TRANSFORM_OPS = [
     },
     {
         "id": "downsample",
-        "label": "Downsample (Bin)",
+        "label": "Downsample x2 (Volume)",
         "params": [
-            {"name": "level", "label": "Bin level (2^n)", "type": "int", "default": 1},
+            #{"name": "level", "label": "Bin level (2^n)", "type": "int", "default": 1, "min": 0},
             {"name": "axis", "label": "Axis", "type": "choice", "default": "All Axes (Uniform)", "choices": ["All Axes (Uniform)", "Projection Angles", "Vertical Detector Height", "Horizontal Detector Width"]},
         ],
     },
+    {
+            "id": "resample",
+            "label": "Resample x2 (Tilt Series)",
+            "params": [
+                #{"name": "level", "label": "Bin level (2^n)", "type": "int", "default": 1, "min": 0},
+            ],
+        },
     {
         "id": "median_filter",
         "label": "Median Filter",
