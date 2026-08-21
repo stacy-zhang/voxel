@@ -253,7 +253,9 @@ def create_tomo_server():
 
     # "Select data type" dialog shown after a file is chosen in the browser.
     state.setdefault("data_type_open", False)
-
+    # Which data-type button is mid-load ("" / "Volume" / "Tilt Series"),
+    # used to swap that button's label for a spinner while the file loads.
+    state.setdefault("data_type_loading", "")
     _baseline_opacity: list[tuple[float, float, float, float]] = []
     _active_reader = None  # prevent reader from being garbage-collected
     _data_range = (0.0, 1.0)  # raw scalar range of the loaded data
@@ -643,24 +645,33 @@ def create_tomo_server():
         else:
             # Don't load until user selects data type, Open Data block is added afterward.
             _pipeline_io["pending_open_path"] = chosen
+            state.data_type_loading = ""
             state.data_type_open = True
 
-    def choose_data_type(data_type):
-        """Finish opening a file after the user picks Volume / Tilt Series.
+    @server.trigger("tomo_choose_data_type")
+    async def choose_data_type(data_type):
+        """Load the pending file once a data-type button is clicked.
 
-        Adds the Open Data pipeline block with the chosen ``data_type`` (shown in
-        the Properties panel, where it stays editable); the ``pipeline`` change
-        watcher then loads the file with the matching kind.
+        Clicking the data type button activates a loading circle until the file is loaded.
+        An Open Data pipeline block is added with the chosen ``data_type``, 
+        shown in the Properties panel.
         """
         path = _pipeline_io.pop("pending_open_path", None)
-        state.data_type_open = False
         if not path:
+            state.data_type_loading = ""
+            state.data_type_open = False
             return
-        ctrl.tomo_add_op(
-            "open_data",
-            label="Data",
-            params={"path": path, "data_type": data_type},
-        )
+        # Yield once so the spinner paints before the blocking load begins.
+        await asyncio.sleep(0)
+        try:
+            ctrl.tomo_add_op(
+                "open_data",
+                label="Data",
+                params={"path": path, "data_type": data_type},
+            )
+        finally:
+            state.data_type_loading = ""
+            state.data_type_open = False
 
     def browser_cancel():
         _pipeline_io.pop("browse_target", None)
@@ -670,7 +681,6 @@ def create_tomo_server():
     ctrl.browser_navigate = browser_navigate
     ctrl.browser_go_up = browser_go_up
     ctrl.browser_confirm = browser_confirm
-    ctrl.choose_data_type = choose_data_type
     ctrl.browser_cancel = browser_cancel
 
     # Opacity preset curves
@@ -1031,18 +1041,32 @@ def create_tomo_server():
             with v3.VCard():
                 v3.VCardTitle("Select data type", classes="text-center")
                 with v3.VCardActions(classes="justify-center pb-4 ga-2"):
-                    v3.VBtn(
-                        "Volume",
+                    with v3.VBtn(
                         color="primary",
                         variant="tonal",
-                        click=(ctrl.choose_data_type, "['Volume']"),
-                    )
-                    v3.VBtn(
-                        "Tilt Series",
+                        disabled=("data_type_loading !== ''",),
+                        click="data_type_loading = 'Volume'; trigger('tomo_choose_data_type', ['Volume'])",
+                    ):
+                        v3.VProgressCircular(
+                            v_if="data_type_loading === 'Volume'",
+                            indeterminate=True,
+                            size=20,
+                            width=2,
+                        )
+                        html.Span("Volume", v_else=True)
+                    with v3.VBtn(
                         color="primary",
                         variant="tonal",
-                        click=(ctrl.choose_data_type, "['Tilt Series']"),
-                    )
+                        disabled=("data_type_loading !== ''",),
+                        click="data_type_loading = 'Tilt Series'; trigger('tomo_choose_data_type', ['Tilt Series'])",
+                    ):
+                        v3.VProgressCircular(
+                            v_if="data_type_loading === 'Tilt Series'",
+                            indeterminate=True,
+                            size=20,
+                            width=2,
+                        )
+                        html.Span("Tilt Series", v_else=True)
 
     return server
 
