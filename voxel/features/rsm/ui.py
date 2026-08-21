@@ -92,6 +92,8 @@ def build_tabs(ctx):
                 style=_inp,
             )
 
+        html.Button("\U0001F4C2 Load Data", click=ctrl.load_data, style="width:100%; margin-top:12px; padding:10px 8px; cursor:pointer;")
+
         # Experimental setup
         html.Strong("Experimental Setup", style="display:block; margin-top:14px;")
         html.Label("Distance (m)", style=_lbl)
@@ -109,11 +111,9 @@ def build_tabs(ctx):
         html.Label("Energy (keV)", style=_lbl)
         html.Input(v_model=("exp_energy", ""), type="number", step="1e-3", style=_inp)
         html.Label("Wavelength (\u00c5)", style=_lbl)
-        html.Input(v_model=("exp_wavelength", ""), type="number", step="1e-3", style=_inp)
+        html.Input(v_model=("exp_wavelength", ""), type="number", step="1e-3", style=_inp)        
 
-        with html.Div(style="display:flex; gap:8px; margin-top:14px;"):
-            html.Button("\U0001F4C2 Load Data", click=ctrl.load_data, style=_btn)
-            html.Button("\U0001F4C8 View Intensity", click=ctrl.view_intensity, style=_btn)
+        html.Button("\U0001F4C8 View Intensity", click=ctrl.view_intensity, style="width:100%; margin-top:12px; padding:10px 8px; cursor:pointer;")
 
         # Crop
         html.Strong("Crop", style="display:block; margin-top:16px;")
