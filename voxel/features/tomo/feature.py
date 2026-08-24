@@ -171,6 +171,9 @@ class TomographyFeature(VoxelFeature):
 
             if op_id == "set_angles":
                 block["params"]["img2"] = int(state.tomo_projection_max or 0)
+                ang_span = (block["params"]["img2"] - block["params"]["img1"]) * 2
+                block["params"]["ang1"] = -1 * ang_span / 2
+                block["params"]["ang2"] = ang_span / 2
                 _recompute_ang_inc(block)
             if params:
                 block["params"] = {**block["params"], **params} # Merge user-provided params with default ones
