@@ -182,9 +182,12 @@ TOMOGRAPHY_GROUPS = [
                 "id": "set_angles",
                 "label": "Set Tilt Angles",
                 "params": [
-                    {"name": "ang1", "label": "Start angle (deg)", "type": "number", "default": 0.0},
-                    {"name": "ang2", "label": "Stop angle (deg)", "type": "number", "default": 180.0},
-                ],
+                    {"name": "img1", "label": "Start Image #", "type": "int", "default": 0},
+                    {"name": "img2", "label": "Stop Image #", "type": "int", "default": 0},
+                    {"name": "ang1", "label": "Start Angle", "type": "number", "default": 0.0},
+                    {"name": "ang2", "label": "Stop Angle", "type": "number", "default": 180.0},
+                    {"name": "ang_inc", "label": "Angle Increment", "type": "number", "default": 0.0, "readonly": True},
+                ], 
             },
         ],
     ),
@@ -497,11 +500,8 @@ def _properties_body(ctx):
             classes="text-caption text-medium-emphasis",
         )
         with html.Div(v_for="(p, pi) in selected_op_params", key="p.name"):
-            # number / int -- persist on blur, NOT on every keystroke: the
-            # auto-run observer re-runs the whole pipeline on each param change,
-            # so committing on blur avoids a recon per keystroke.
             v3.VTextField(
-                v_show="p.type === 'number' || p.type === 'int'",
+                v_show="(p.type === 'number' || p.type === 'int') && !p.readonly",
                 label=("p.label",),
                 v_model=("p.value",),
                 type="number",
@@ -511,7 +511,19 @@ def _properties_body(ctx):
                 variant="outlined",
                 hide_details=True,
                 classes="mb-2",
-                blur=(ctrl.tomo_set_param, "[selected_op_id, p.name, p.value]"),
+                blur=(ctrl.tomo_set_param, "[selected_op_id, p.name, p.value]"), 
+                # commit the values when the user clicks outside the text input field
+            )
+            # read-only / computed number 
+            v3.VTextField(
+                v_show="(p.type === 'number' || p.type === 'int') && p.readonly",
+                label=("p.label",),
+                model_value=("p.value",),
+                readonly=True,
+                density="compact",
+                variant="outlined",
+                hide_details=True,
+                classes="mb-2",
             )
             # text
             v3.VTextField(
@@ -563,7 +575,7 @@ def _properties_body(ctx):
         # Tilt series projection slider bar
         with html.Div(v_show="tomo_is_tilt_series", classes="mt-3"):
             html.Div(
-                "Projection {{ tomo_projection_index + 1 }} / {{ tomo_projection_max + 1 }}",
+                "Projection {{ tomo_projection_index }} / {{ tomo_projection_max }}",
                 classes="text-caption text-medium-emphasis mb-1",
             )
             v3.VSlider(

@@ -94,6 +94,15 @@ class TomographyFeature(VoxelFeature):
                     return i, b
             return -1, None
 
+        def _recompute_ang_inc(block) -> None:
+            """Derive angle increment from the image/angle range."""
+            p = block["params"]
+            try:
+                span = float(p.get("img2", 0)) - float(p.get("img1", 0))
+                p["ang_inc"] = (float(p.get("ang2", 0)) - float(p.get("ang1", 0))) / span if span else 0.0
+            except (TypeError, ValueError):
+                p["ang_inc"] = 0.0
+
         def _sync_selected_params() -> None:
             """Rebuild ``selected_op_*`` from the currently selected block.
 
@@ -127,6 +136,7 @@ class TomographyFeature(VoxelFeature):
                     "value": block["params"].get(p["name"], p.get("default", "")),
                     "min": p.get("min"),
                     "max": p.get("max"),
+                    "readonly": p.get("readonly", False),
                 }
                 if is_crop and _crop_dim(p["name"]):
                     entry["min"] = 0
@@ -158,6 +168,10 @@ class TomographyFeature(VoxelFeature):
                     dim = _crop_dim(name)
                     if dim:
                         block["params"][name] = dim
+
+            if op_id == "set_angles":
+                block["params"]["img2"] = int(state.tomo_projection_max or 0)
+                _recompute_ang_inc(block)
             if params:
                 block["params"] = {**block["params"], **params} # Merge user-provided params with default ones
             state.pipeline = state.pipeline + [block]
@@ -200,6 +214,8 @@ class TomographyFeature(VoxelFeature):
             if block["op"] == "crop" and name in _CROP_AXIS:
                 value = _clamp_crop(name, value, _crop_dim(name))
             block["params"] = {**block["params"], name: value}
+            if block["op"] == "set_angles":
+                _recompute_ang_inc(block)
             state.pipeline = blocks
             if state.selected_op_id == op_id:
                 _sync_selected_params()
