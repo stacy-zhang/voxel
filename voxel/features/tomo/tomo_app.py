@@ -111,6 +111,11 @@ def create_tomo_server():
         slice_mappers[axis] = mapper
         slice_actors[axis] = actor
 
+    tilt_slice_plane = vtkPlane()
+    tilt_slice_plane.SetNormal(0, 0, 1) # z
+    tilt_slice_plane.SetOrigin(0, 0, 0)
+    slice_mappers["z"].SetSlicePlane(tilt_slice_plane)
+
     # Clipping planes for axis-aligned slicing (6 planes: +X, -X, +Y, -Y, +Z, -Z)
     clip_planes = {}
     for axis_name, normal in [("x_min", (1,0,0)), ("x_max", (-1,0,0)),
@@ -251,13 +256,19 @@ def create_tomo_server():
     state.setdefault("browser_items", [])  # list[dict] shown in the dialog list
     state.setdefault("browser_selected", [])  # currently highlighted item(s)
 
-    # "Select data type" dialog shown after a file is chosen in the browser.
+    # "Select data type" dialog shown after a file is chosen in the browser
     state.setdefault("data_type_open", False)
-    # Which data-type button is mid-load ("" / "Volume" / "Tilt Series"),
-    # used to swap that button's label for a spinner while the file loads.
     state.setdefault("data_type_loading", "")
+
+    # Tilt series projection slider bar
+    state.setdefault("tomo_projection_index", 0)
+    state.setdefault("tomo_projection_max", 0)
+    state.setdefault("tomo_is_open_data", False)
+    state.setdefault("tomo_is_tilt_series", False)
+
     _baseline_opacity: list[tuple[float, float, float, float]] = []
     _active_reader = None  # prevent reader from being garbage-collected
+    _tilt_image = None  # keep the tilt-series vtkImageData alive for the z-slice
     _data_range = (0.0, 1.0)  # raw scalar range of the loaded data
     _volume_bounds = (0.0, 1.0, 0.0, 1.0, 0.0, 1.0)  # xmin,xmax,ymin,ymax,zmin,zmax
     # Bridge between the workflow and the scene: "base" holds the loaded dataset
@@ -462,6 +473,7 @@ def create_tomo_server():
         vol_property.SetShade(bool(state.shade))
 
         volume_actor.VisibilityOn()
+        slice_actors["z"].VisibilityOff()  # hide any tilt-series projection view
         outline_actor.SetVisibility(bool(state.show_outline))
 
         _volume_bounds = img.GetBounds()
@@ -476,6 +488,57 @@ def create_tomo_server():
 
         state.scalar_range = f"{srange[0]:.3f} – {srange[1]:.3f}"
         state.dimensions = f"{nx} × {ny} × {nz}"
+        state.loaded = True
+        _view_update()
+
+    def _position_tilt_plane(index):
+        """Move the projection slice to z=index (clamped) inside the outline box."""
+        idx = max(0, min(int(index), int(state.tomo_projection_max or 0)))
+        tilt_slice_plane.SetOrigin(0.0, 0.0, float(idx))
+        slice_mappers["z"].Modified()
+
+    def _show_tilt_series(prj, reset_index=False):
+        """Display one projection of a tilt series as a 2D image in the box.
+
+        The full ``(theta, y, x)`` stack determines the outline box framing, the
+        z-slice actor shows a single projection whose depth follows the slider.
+        """
+        nonlocal _tilt_image, _volume_bounds
+        arr = np.ascontiguousarray(np.asarray(prj, dtype=np.float32))
+        if arr.ndim == 2:  # a single projection
+            arr = arr[np.newaxis, ...]
+        ntheta, ny, nx = arr.shape
+        img = vtkImageData()
+        img.SetDimensions(nx, ny, ntheta)
+        vtk_arr = numpy_support.numpy_to_vtk(arr.ravel(order="C"), deep=True)
+        img.GetPointData().SetScalars(vtk_arr)
+        _tilt_image = img  # keep alive; mappers only hold a ref
+
+        srange = img.GetScalarRange()
+        _setup_transfer_functions(srange)
+
+        outline_filter.SetInputData(img)  # box spans the whole projection stack
+        slice_mappers["z"].SetInputData(img)
+        img_prop = slice_actors["z"].GetProperty()
+        img_prop.SetLookupTable(color_tf)
+        img_prop.UseLookupTableScalarRangeOn()
+
+        state.tomo_projection_max = int(ntheta - 1)
+        cur = int(state.tomo_projection_index or 0)
+        if reset_index or cur > ntheta - 1:
+            cur = ntheta // 2
+            state.tomo_projection_index = cur
+        _position_tilt_plane(cur)
+
+        volume_actor.VisibilityOff()
+        slice_actors["z"].VisibilityOn()
+        outline_actor.SetVisibility(bool(state.show_outline))
+
+        _volume_bounds = img.GetBounds()
+        renderer.ResetCamera()
+
+        state.scalar_range = f"{srange[0]:.3f} – {srange[1]:.3f}"
+        state.dimensions = f"{nx} × {ny} × {ntheta}"
         state.loaded = True
         _view_update()
 
@@ -540,7 +603,10 @@ def create_tomo_server():
         state.tomo_dim_y = int(bny)
         state.tomo_dim_z = int(bnz)
         try:
-            _show_numpy_volume(arr)
+            if kind == "tilt_series":
+                _show_tilt_series(arr, reset_index=True)
+            else:
+                _show_numpy_volume(arr)
         except Exception as exc:  # noqa: BLE001
             return
         state.tiff_path = str(resolved)
@@ -806,6 +872,13 @@ def create_tomo_server():
         vol_property.SetSpecular(float(specular))
         _view_update()
 
+    @state.change("tomo_projection_index")
+    def _on_projection_index(tomo_projection_index, **_kw):
+        if not slice_actors["z"].GetVisibility():
+            return
+        _position_tilt_plane(tomo_projection_index)
+        _view_update()
+
 
     def _fb_open(target, mode="file"):
         # Remember which block param this browse is for, then open the browser;
@@ -840,12 +913,18 @@ def create_tomo_server():
         except Exception as exc:  # noqa: BLE001
             return
         _pipeline_io["result"] = result
-        vol = result.recon if result.recon is not None else result.prj
-        if vol is not None:
-            try:
-                _show_numpy_volume(np.asarray(vol))
-            except Exception as exc:  # noqa: BLE001
-                return
+        # A reconstructed volume is shown as a 3D volume;
+        # a tilt series stays a projection stack scrubbed via the slider
+        is_tilt = _pipeline_io.get("loaded_kind") == "tilt_series"
+        try:
+            if result.recon is not None:
+                _show_numpy_volume(np.asarray(result.recon))
+            elif result.prj is not None and is_tilt:
+                _show_tilt_series(np.asarray(result.prj))
+            elif result.prj is not None:
+                _show_numpy_volume(np.asarray(result.prj))
+        except Exception as exc:  # noqa: BLE001
+            return
 
     def _maybe_reload_base():
         """Reload the base dataset when the Open Data block's path/type changes.

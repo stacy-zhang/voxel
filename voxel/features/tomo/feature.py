@@ -106,9 +106,16 @@ class TomographyFeature(VoxelFeature):
             if block is None:
                 state.selected_op_label = ""
                 state.selected_op_params = []
+                state.tomo_is_open_data = False
+                state.tomo_is_tilt_series = False
                 return
             spec = tomo_ui.TOMO_OPS[block["op"]]
             is_crop = block["op"] == "crop"
+            is_open = block["op"] == "open_data"
+            state.tomo_is_open_data = is_open
+            state.tomo_is_tilt_series = (
+                is_open and block["params"].get("data_type") == "Tilt Series"
+            )
             state.selected_op_label = block["label"]
             params = []
             for p in spec["params"]:

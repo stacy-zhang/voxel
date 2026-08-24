@@ -560,6 +560,22 @@ def _properties_body(ctx):
                 update_modelValue=(ctrl.tomo_set_param, "[selected_op_id, p.name, $event]"),
             )
 
+        # Tilt series projection slider bar
+        with html.Div(v_show="tomo_is_tilt_series", classes="mt-3"):
+            html.Div(
+                "Projection {{ tomo_projection_index + 1 }} / {{ tomo_projection_max + 1 }}",
+                classes="text-caption text-medium-emphasis mb-1",
+            )
+            v3.VSlider(
+                v_model=("tomo_projection_index",),
+                min=0,
+                max=("tomo_projection_max",),
+                step=1,
+                density="compact",
+                hide_details=True,
+                thumb_label=True,
+            )
+
 
 def build_pipeline_panel(ctx):
     """Public: the Pipeline section body, for an always-open two-section layout."""
