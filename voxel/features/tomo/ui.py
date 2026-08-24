@@ -511,8 +511,9 @@ def _properties_body(ctx):
                 variant="outlined",
                 hide_details=True,
                 classes="mb-2",
-                blur=(ctrl.tomo_set_param, "[selected_op_id, p.name, p.value]"), 
-                # commit the values when the user clicks outside the text input field
+                input=(ctrl.tomo_set_param, "[selected_op_id, p.name, p.value]"), 
+                # blur component events commits the values when the user clicks outside the text input field
+                # input commits it immediately as the user types
             )
             # read-only / computed number 
             v3.VTextField(
@@ -534,7 +535,7 @@ def _properties_body(ctx):
                 variant="outlined",
                 hide_details=True,
                 classes="mb-2",
-                blur=(ctrl.tomo_set_param, "[selected_op_id, p.name, p.value]"),
+                input=(ctrl.tomo_set_param, "[selected_op_id, p.name, p.value]"),
             )
             # path -- read-only; clicking opens the shared file browser
             v3.VTextField(
