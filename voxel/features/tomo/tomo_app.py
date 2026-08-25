@@ -973,6 +973,7 @@ def create_tomo_server():
                             v_bind="props",
                             variant="text",
                             append_icon="mdi-chevron-down",
+                            rounded="lg",
                         )
                     with v3.VList(density="compact"):
                         if subgroups:
@@ -1055,23 +1056,43 @@ def create_tomo_server():
             max_width=700,
             scrollable=True,
         ):
-            with v3.VCard():
-                v3.VCardTitle("Select a dataset (TIFF / .npy) or folder")
-                with v3.VCardSubtitle():
-                    html.Span("{{ browser_path }}")
+            with v3.VCard(rounded="lg"):
+                with html.Div(classes="d-flex align-center mt-2"):
+                    v3.VIcon("mdi-folder-multiple", classes="ms-10 me-2", size=36)
+                    with html.Div():
+                        v3.VCardTitle("Upload a dataset", classes="mt-2")
+                        v3.VCardSubtitle("Supported formats: TIFF, HDF5, and NPY", classes="mb-4")
+
+                v3.VDivider()
     
-                with v3.VCardText(style="height: 400px; overflow-y: auto;"):
-                    # Up-one-level button
-                    v3.VBtn(
-                        "Parent directory",
-                        variant="text",
-                        prepend_icon="mdi-arrow-up",
-                        click=ctrl.browser_go_up,
-                        classes="mb-2",
-                        block=True,
-                    )
-                    v3.VDivider()
-                    # File / directory list
+                # Back button + current path 
+                with v3.VCardText(classes="py-1 mx-1"):
+                    with html.Div(classes="d-flex align-center"):
+                        v3.VBtn(
+                            "Back",
+                            variant="text",
+                            prepend_icon="mdi-arrow-left",
+                            click=ctrl.browser_go_up,
+                            rounded="lg",
+                            classes="flex-shrink-0 mt-2",
+                        )
+                        # truncate the middle of the path if too long
+                        with html.Div(
+                            classes="d-flex justify-end text-grey ms-auto",
+                            style="flex:0 1 50%; max-width:50%; min-width:0; overflow:hidden;",
+                        ):
+                            html.Span(
+                                "{{ browser_path.slice(0, -12) }}",
+                                style="overflow:hidden; text-overflow:ellipsis; "
+                                "white-space:nowrap; min-width:0;",
+                            )
+                            html.Span(
+                                "{{ browser_path.slice(-12) }}",
+                                style="white-space:nowrap; flex-shrink:0;",
+                            )
+
+                # Scrollable file / directory list
+                with v3.VCardText(classes="pt-0 mx-1", style="height: 400px; overflow-y: auto;"):
                     with v3.VList(
                         density="compact",
                         nav=True,
@@ -1085,6 +1106,7 @@ def create_tomo_server():
                             click=(ctrl.browser_navigate, "[item.value]"),
                             active=("browser_selected.includes(item.value)",),
                             color="primary",
+                            rounded="lg",
                         ):
                             pass
     
@@ -1098,11 +1120,12 @@ def create_tomo_server():
                 v3.VDivider()
     
                 with v3.VCardActions():
-                    v3.VSpacer()
+                    v3.VSpacer() # push the buttons to the right
                     v3.VBtn(
                         "Cancel",
                         variant="text",
                         click=ctrl.browser_cancel,
+                        rounded="lg",
                     )
                     v3.VBtn(
                         "Open",
@@ -1110,6 +1133,7 @@ def create_tomo_server():
                         variant="flat",
                         disabled=("browser_selected.length === 0",),
                         click=ctrl.browser_confirm,
+                        rounded="lg",
                     )
 
         with v3.VDialog(
@@ -1117,7 +1141,7 @@ def create_tomo_server():
             max_width=320,
             persistent=True,
         ):
-            with v3.VCard():
+            with v3.VCard(rounded="lg"):
                 v3.VCardTitle("Select data type", classes="text-center")
                 with v3.VCardActions(classes="justify-center pb-4 ga-2"):
                     with v3.VBtn(
@@ -1125,6 +1149,7 @@ def create_tomo_server():
                         variant="tonal",
                         disabled=("data_type_loading !== ''",),
                         click="data_type_loading = 'Volume'; trigger('tomo_choose_data_type', ['Volume'])",
+                        rounded="lg",
                     ):
                         v3.VProgressCircular(
                             v_if="data_type_loading === 'Volume'",
@@ -1138,6 +1163,7 @@ def create_tomo_server():
                         variant="tonal",
                         disabled=("data_type_loading !== ''",),
                         click="data_type_loading = 'Tilt Series'; trigger('tomo_choose_data_type', ['Tilt Series'])",
+                        rounded="lg",
                     ):
                         v3.VProgressCircular(
                             v_if="data_type_loading === 'Tilt Series'",

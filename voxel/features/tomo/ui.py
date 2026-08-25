@@ -194,8 +194,9 @@ TOMOGRAPHY_GROUPS = [
     (
         "Alignment",
         [
-            {"id": "align_seq", "label": "Auto-align (sequential)", "params": _ALIGN_PARAMS},
-            {"id": "align_joint", "label": "Auto-align (joint)", "params": _ALIGN_PARAMS},
+            {"id": "align_seq", "label": "Image Alignment (Auto: Sequential)", "params": _ALIGN_PARAMS},
+            {"id": "align_joint", "label": "Image Alignment (Auto: Joint)", "params": _ALIGN_PARAMS},
+            {"id": "align_man", "label": "Image Alignment (Manual)", "params": []},
             {
                 "id": "shift_images",
                 "label": "Manual Shift",
@@ -204,6 +205,7 @@ TOMOGRAPHY_GROUPS = [
                     {"name": "sy", "label": "Shift Y", "type": "number", "default": 0.0},
                 ],
             },
+            {"id": "align_tilt_man", "label": "Tilt Axis Alignment (Manual)", "params": []},
             {"id": "scale", "label": "Scale to [\u22121, 1]", "params": []},
             {
                 "id": "blur_edges",
@@ -424,7 +426,7 @@ def _pipeline_body(ctx):
     html.Div(
         "No operations yet \u2014 add one from the menus.",
         v_show="pipeline.length === 0",
-        classes="text-caption text-medium-emphasis pa-2",
+        classes="text-caption pa-2 text-blue",
     )
     with v3.VList(density="compact", nav=True, classes="pa-0", v_show="pipeline.length > 0"):
         with v3.VListItem(
@@ -490,7 +492,7 @@ def _properties_body(ctx):
     html.Div(
         "Select a pipeline block to edit its parameters.",
         v_show="!selected_op_id",
-        classes="text-caption text-medium-emphasis pa-2",
+        classes="text-caption pa-2 text-blue",
     )
     with html.Div(v_show="selected_op_id", classes="pa-1"):
         html.Div("{{ selected_op_label }}", classes="text-subtitle-2 font-weight-medium mb-2")
