@@ -556,8 +556,33 @@ def create_tomo_server():
             return np.asarray(zarr.open_array(str(root), mode="r"))
         return np.stack([np.asarray(group[k]) for k in keys], axis=0)
 
+    def _read_hdf5(path):
+        """Read an HDF5/NeXus file into a NumPy array.
+
+        Prefers the standard NeXus path ``/entry/data/data``; otherwise picks
+        the largest multi-dimensional dataset found in the file.
+        """
+        import h5py  # optional dep; only needed for HDF5 datasets
+
+        with h5py.File(str(path), "r") as f:
+            if "/entry/data/data" in f:
+                return np.squeeze(np.asarray(f["/entry/data/data"]))
+
+            best = {"dset": None, "size": -1}
+
+            def _visit(name, obj):
+                if isinstance(obj, h5py.Dataset) and obj.ndim >= 2:
+                    if obj.size > best["size"]:
+                        best["size"] = obj.size
+                        best["dset"] = name
+
+            f.visititems(_visit)
+            if best["dset"] is None:
+                raise ValueError(f"No 2-D+ dataset found in HDF5 file: {path.name}")
+            return np.squeeze(np.asarray(f[best["dset"]]))
+
     def _read_array(path):
-        """Read a dataset path into a NumPy array (TIFF stack, .npy, or Zarr)."""
+        """Read a dataset path into a NumPy array (TIFF stack, .npy, HDF5, or Zarr)."""
         p = Path(path)
         if p.is_dir() or (p / "zarr.json").exists():
             return _read_zarr_stack(p)
@@ -567,6 +592,8 @@ def create_tomo_server():
             return np.asarray(tifffile.imread(str(p)))
         if suffix == ".npy":
             return np.load(str(p))
+        if suffix in (".h5", ".hdf5", ".nxs"):
+            return _read_hdf5(p)
         if suffix == ".zarr":
             return _read_zarr_stack(p)
         raise ValueError(f"Unsupported dataset type: {p.name}")
@@ -613,7 +640,7 @@ def create_tomo_server():
 
     # file browser helpers
     def _list_directory(directory: str) -> list[dict]:
-        """Return a sorted list of entries (sub-dirs + tif/tiff files) for *directory*."""
+        """Return a sorted list of entries for *directory*."""
         p = Path(directory).expanduser().resolve()
         if not p.is_dir():
             return []
@@ -635,12 +662,14 @@ def create_tomo_server():
                 }
             )
 
-        # Dataset files: TIFF stacks + .npy arrays (sorted)
+        # Dataset files: TIFF stacks + .npy arrays + HDF5 files (sorted)
         tiff_files = sorted(
             (
                 f
                 for f in p.iterdir()
-                if f.is_file() and f.suffix.lower() in (".tif", ".tiff", ".npy")
+                if f.is_file()
+                and f.suffix.lower()
+                in (".tif", ".tiff", ".npy", ".h5", ".hdf5", ".nxs")
             ),
             key=lambda f: f.name.lower(),
         )
