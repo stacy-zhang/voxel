@@ -260,6 +260,11 @@ def create_tomo_server():
     state.setdefault("data_type_open", False)
     state.setdefault("data_type_loading", "")
 
+    # Manual Image Alignment dialog
+    state.setdefault("align_man_dialog", False)
+    state.setdefault("cur_img", 0)
+    state.setdefault("ref_img", 0)
+
     # Tilt series projection slider bar
     state.setdefault("tomo_projection_index", 0)
     state.setdefault("tomo_projection_max", 0)
@@ -778,6 +783,30 @@ def create_tomo_server():
     ctrl.browser_confirm = browser_confirm
     ctrl.browser_cancel = browser_cancel
 
+    def open_align_man():
+        """Open the (blank) Manual Image Alignment dialog."""
+        state.align_man_dialog = True
+
+    ctrl.open_align_man = open_align_man
+
+    # Menu ops that open a dialog instead of appending a pipeline block.
+    _DIALOG_OP_HANDLERS = {"align_man": open_align_man}
+
+    def _menu_click(op):
+        """Resolve a menu op to its click handler.
+
+        Dialog ops open their dialog, File ops route to app handlers, and every
+        other op appends a pipeline block via tomo_add_op.
+        """
+        handler = _DIALOG_OP_HANDLERS.get(op["id"])
+        if handler is not None:
+            return handler
+        if op["id"] == "open_data":
+            return ctrl.open_browser
+        if op["id"] == "save_data":
+            return ctrl.tomo_save_data
+        return (ctrl.tomo_add_op, f"['{op['id']}']")
+
     # Opacity preset curves
     _OPACITY_PRESETS = {
         "linear": [
@@ -1018,18 +1047,11 @@ def create_tomo_server():
                                         for op in cat_ops:
                                             v3.VListItem(
                                                 title=op["label"],
-                                                click=(ctrl.tomo_add_op, f"['{op['id']}']"),
+                                                click=_menu_click(op),
                                             )
                             continue
                         for op in ops:
-                            if op["id"] == "open_data":
-                                click = ctrl.open_browser
-                            elif op["id"] == "save_data":
-                                click = ctrl.tomo_save_data
-                            else:
-                                # Add this operation to the pipeline as a block.
-                                click = (ctrl.tomo_add_op, f"['{op['id']}']")
-                            v3.VListItem(title=op["label"], click=click)
+                            v3.VListItem(title=op["label"], click=_menu_click(op))
 
         with layout.drawer as drawer:
             drawer.width = 360
@@ -1201,6 +1223,56 @@ def create_tomo_server():
                             width=2,
                         )
                         html.Span("Tilt Series", v_else=True)
+
+        # Manual Image Alignment dialog 
+        with v3.VDialog(v_model=("align_man_dialog",), max_width=1000):
+            with v3.VCard(rounded="lg"):
+                v3.VCardTitle("Manual Image Alignment", classes="text-center")
+                with html.Span():
+                    with html.Div():
+                        html.Div("Current Image", classes="ma-2")
+                        v3.VTextField(
+                            v_model=("cur_img",),
+                            min=0,
+                            type="number",
+                            variant="outlined",
+                            density="compact",
+                            style="max-width: 100px; width: 100%;",
+                            classes="ma-2",
+                        )
+                        html.Div("Reference Image", classes="ma-2")
+                        with html.Span(classes="d-flex"):
+                            v3.VTextField(
+                                v_model=("ref_img",),
+                                min=0,
+                                type="number",
+                                variant="outlined",
+                                density="compact",
+                                style="max-width: 100px; width: 100%;",
+                                classes="mx-2",
+                            )   
+                            with v3.VBtnToggle(
+                                variant="outlined",
+                                density="compact",
+                                divided=True,
+                                color="info",
+                                mandatory=True,
+                            ):
+                                v3.VBtn("Previous")
+                                v3.VBtn("Next")
+                                v3.VBtn("Static")
+                with v3.VCardActions(classes="justify-end"):
+                    v3.VBtn(
+                        "Cancel", 
+                        variant="text", 
+                        click="align_man_dialog = false", 
+                    )
+                    v3.VBtn(
+                        "Apply", 
+                        variant="flat", 
+                        click="align_man_dialog = false",
+                        color="primary",
+                    )
 
     return server
 
