@@ -113,6 +113,20 @@ def _require_prj(data: TomoData) -> np.ndarray:
     return data.prj
 
 
+def _working_field(data: TomoData) -> str:
+    """Array a data transform edits: ``recon`` for volumes, ``prj`` for tilt series."""
+    return "recon" if data.kind == "volume" else "prj"
+
+
+def _require_working(data: TomoData) -> np.ndarray:
+    """The active image array (volume ``recon`` or projection ``prj``)."""
+    field = _working_field(data)
+    arr = getattr(data, field)
+    if arr is None:
+        raise ValueError("No image data loaded.")
+    return arr
+
+
 def _require_ang(data: TomoData) -> np.ndarray:
     if data.ang is None:
         raise ValueError(
@@ -126,9 +140,9 @@ def _require_ang(data: TomoData) -> np.ndarray:
 # Data Transforms
 # ===========================================================================
 def op_crop(data: TomoData, params: dict) -> TomoData:
-    """Crop every projection to a row/column ROI (pure NumPy, no TomoPy)."""
-    prj = _require_prj(data)
-    nz, ny, nx = prj.shape
+    """Crop the volume / projection stack to a row/column ROI (pure NumPy, no TomoPy)."""
+    arr = _require_working(data)
+    nz, ny, nx = arr.shape
     r0 = max(0, _i(params, "y_min", 0) or 0)
     r1 = _i(params, "y_max", 0) or 0
     c0 = max(0, _i(params, "x_min", 0) or 0)
@@ -138,58 +152,58 @@ def op_crop(data: TomoData, params: dict) -> TomoData:
     r1 = ny if r1 <= r0 else min(ny, r1)
     c1 = nx if c1 <= c0 else min(nx, c1)
     d1 = nz if d1 <= d0 else min(nz, d1)
-    return data.with_(prj=prj[d0:d1, r0:r1, c0:c1])
+    return data.with_(**{_working_field(data): arr[d0:d1, r0:r1, c0:c1]})
 
 
 def op_downsample(data: TomoData, params: dict) -> TomoData:
-    """Bin volumes by x2 along all axes (tomopy.misc.morph.downsample)."""
+    """Bin volumes by x2 along all a    xes (tomopy.misc.morph.downsample)."""
 
     axes = {"All Axes (Uniform)": [0,1,2], "Projection Angles": [0], "Vertical Detector Height": [1], "Horizontal Detector Width": [2]}
 
-    prj = _require_prj(data)
+    arr = _require_working(data)
     for axis in axes.get(params.get('axis')):
-        prj=tomopy.misc.morph.downsample(prj, level=1, axis=axis)
-    return data.with_(prj=prj)
+        arr=tomopy.misc.morph.downsample(arr, level=1, axis=axis)
+    return data.with_(**{_working_field(data): arr}) # ** unpacks the dictionary into keyword args
 
 
 def op_resample(data: TomoData, params: dict) -> TomoData:
     """Bin tilt series x2 along X and Y image dimensions (tomopy.misc.morph.downsample)."""
 
-    prj = _require_prj(data)
+    arr = _require_working(data)
     for axis in [1,2]:
-        prj=tomopy.misc.morph.downsample(prj, level=1, axis=axis)
-    return data.with_(prj=prj)
+        arr=tomopy.misc.morph.downsample(arr, level=1, axis=axis)
+    return data.with_(**{_working_field(data): arr})
 
 
 def op_median_filter(data: TomoData, params: dict) -> TomoData:
     """Median-filter each projection (tomopy.misc.corr.median_filter)."""
     #from tomopy.misc.corr import median_filter
 
-    prj = _require_prj(data)
+    arr = _require_working(data)
     size = _i(params, "size", 3) or 3
     axis = _i(params, "axis", 0)
-    return data.with_(prj=tomopy.misc.corr.median_filter(prj, size=size, axis=axis))
+    return data.with_(**{_working_field(data): tomopy.misc.corr.median_filter(arr, size=size, axis=axis)})
 
 def op_gaussian_filter(data: TomoData, params: dict) -> TomoData:
     """Gaussian-filter each projection (tomopy.misc.corr.gaussian_filter)."""
     #from tomopy.misc.corr import gaussian_filter
 
-    prj = _require_prj(data)
+    arr = _require_working(data)
     sigma = _f(params, "sigma", 2.0) or 2.0
     axis = _i(params, "axis", 0)
-    return data.with_(prj=tomopy.misc.corr.gaussian_filter(prj, sigma=sigma, axis=axis))
+    return data.with_(**{_working_field(data): tomopy.misc.corr.gaussian_filter(arr, sigma=sigma, axis=axis)})
 
 def op_wiener_filter(data: TomoData, params: dict) -> TomoData:
     """Wiener-filter each projection (tomopy.misc.corr.wiener_filter)."""
     #from tomopy.misc.corr import wiener_filter
 
-    prj = _require_prj(data)
+    arr = _require_working(data)
     sigma_x = _f(params, "sigma_x", 0.5) or 0.5
     sigma_y = _f(params, "sigma_y", 0.5) or 0.5
     sigma_z = _f(params, "sigma_z", 0.5) or 0.5
     snr = _f(params, "snr", 15.0) or 15.0
     axis = _i(params, "axis", 0)
-    return data.with_(prj=tomopy.misc.corr.wiener_filter(prj, sigma_x=sigma_x, sigma_y=sigma_y, sigma_z=sigma_z, snr=snr, axis=axis))
+    return data.with_(**{_working_field(data): tomopy.misc.corr.wiener_filter(arr, sigma_x=sigma_x, sigma_y=sigma_y, sigma_z=sigma_z, snr=snr, axis=axis)})
 
 
 # ===========================================================================
